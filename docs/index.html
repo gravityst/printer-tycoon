@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Printer Tycoon</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f0f2f5; color: #1a1a1a;
+    min-height: 100vh;
+  }
+
+  header {
+    background: #1a1a1a; color: #fff;
+    padding: 14px 24px;
+    display: flex; align-items: center; gap: 32px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  header .brand { font-weight: 800; font-size: 20px; letter-spacing: -0.5px; }
+  header .stats { display: flex; gap: 24px; margin-left: auto; font-size: 14px; font-weight: 600; }
+  header .stat-label { color: #888; font-weight: 500; margin-right: 6px; }
+  header .stat-money { color: #4ade80; }
+  header .stat-rep { color: #fbbf24; }
+  header .controls { display: flex; gap: 8px; }
+  header button {
+    background: #2a2a2a; color: #fff; border: 1px solid #3a3a3a;
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  header button:hover { background: #3a3a3a; }
+  header button.danger { color: #f87171; }
+
+  main {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr 0.9fr;
+    gap: 16px;
+    padding: 16px;
+    max-width: 1600px; margin: 0 auto;
+  }
+  section {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  }
+  section h2 {
+    font-size: 13px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1px; color: #888; margin-bottom: 12px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  section h2 .count { font-size: 11px; color: #aaa; }
+
+  /* Printer card */
+  .printer-card {
+    border: 1px solid #e5e7eb; border-radius: 10px;
+    padding: 14px; margin-bottom: 12px;
+    background: #fafafa;
+  }
+  .printer-card.printing { background: #fff8e7; border-color: #fcd34d; }
+  .printer-name { font-weight: 700; font-size: 15px; }
+  .printer-tier {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px; text-transform: uppercase;
+    background: #e5e7eb; color: #555; margin-left: 6px;
+  }
+  .printer-tier.garage { background: #fee2e2; color: #b91c1c; }
+  .printer-tier.hobbyist { background: #fed7aa; color: #c2410c; }
+  .printer-tier.studio { background: #fef3c7; color: #a16207; }
+  .printer-tier.pro { background: #dbeafe; color: #1d4ed8; }
+  .printer-tier.industrial { background: #ddd6fe; color: #6d28d9; }
+  .printer-tier.endgame { background: #1a1a1a; color: #fbbf24; }
+
+  .printer-specs { font-size: 12px; color: #666; margin-top: 4px; }
+  .printer-status { margin-top: 10px; font-size: 13px; }
+  .printer-status.idle { color: #6b7280; font-style: italic; }
+  .progress {
+    margin-top: 8px;
+    height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden;
+  }
+  .progress .fill { height: 100%; background: linear-gradient(90deg, #4ade80, #22c55e); transition: width 0.3s; }
+  .job-info { font-size: 12px; color: #555; margin-top: 6px; display: flex; justify-content: space-between; }
+
+  /* Order card */
+  .order-card {
+    border: 1px solid #e5e7eb; border-radius: 10px;
+    padding: 12px; margin-bottom: 10px;
+    background: #fafafa;
+    transition: background 0.15s;
+  }
+  .order-card:hover { background: #f3f4f6; }
+  .order-name { font-weight: 700; font-size: 14px; }
+  .order-cat {
+    display: inline-block; font-size: 10px;
+    padding: 2px 6px; border-radius: 4px;
+    background: #ede9fe; color: #6d28d9; margin-left: 6px; font-weight: 600;
+  }
+  .order-spec { font-size: 12px; color: #666; margin-top: 3px; }
+  .order-pay { font-size: 13px; color: #16a34a; font-weight: 700; margin-top: 6px; }
+  .order-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .order-actions button {
+    flex: 1; padding: 8px 10px; font-size: 12px; font-weight: 600;
+    border: 1px solid #d1d5db; border-radius: 6px;
+    background: #fff; color: #1a1a1a; cursor: pointer; font-family: inherit;
+  }
+  .order-actions button:hover:not(:disabled) { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .order-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .order-actions button.reject { color: #b91c1c; }
+  .order-actions button.reject:hover:not(:disabled) { background: #b91c1c; color: #fff; border-color: #b91c1c; }
+  .order-deadline { font-size: 11px; color: #888; margin-top: 4px; }
+  .order-deadline.urgent { color: #b91c1c; font-weight: 600; }
+
+  /* Material card */
+  .mat-card {
+    border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 8px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px;
+    background: #fafafa;
+  }
+  .mat-info { flex: 1; min-width: 0; }
+  .mat-name { font-weight: 600; font-size: 13px; }
+  .mat-stock { font-size: 11px; color: #888; }
+  .mat-cost { font-size: 11px; color: #666; }
+  .mat-buy {
+    padding: 6px 10px; font-size: 11px; font-weight: 600;
+    border: 1px solid #d1d5db; border-radius: 5px;
+    background: #fff; color: #1a1a1a; cursor: pointer; font-family: inherit;
+    flex-shrink: 0;
+  }
+  .mat-buy:hover:not(:disabled) { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .mat-buy:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .empty { color: #aaa; font-size: 13px; font-style: italic; padding: 16px 0; text-align: center; }
+
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1a1a1a; color: #fff;
+    padding: 10px 20px; border-radius: 8px;
+    font-size: 13px; font-weight: 600;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    z-index: 100;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(-8px); }
+  .toast.success { background: #16a34a; }
+  .toast.error { background: #b91c1c; }
+
+  @media (max-width: 1024px) {
+    main { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Printer Tycoon</div>
+  <div class="stats">
+    <div><span class="stat-label">Cash</span><span class="stat-money">$<span id="money">0</span></span></div>
+    <div><span class="stat-label">Day</span><span id="day">1</span> · <span id="hour">08:00</span></div>
+    <div><span class="stat-label">Rep</span><span class="stat-rep" id="rep">0</span></div>
+    <div><span class="stat-label">Shipped</span><span id="shipped">0</span></div>
+  </div>
+  <div class="controls">
+    <button id="btnSpeed">1x</button>
+    <button id="btnReset" class="danger">Reset</button>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Workshop <span class="count" id="printerCount"></span></h2>
+    <div id="printers"></div>
+  </section>
+  <section>
+    <h2>Incoming Orders <span class="count" id="orderCount"></span></h2>
+    <div id="orders"></div>
+  </section>
+  <section>
+    <h2>Filament &amp; Resin</h2>
+    <div id="inventory"></div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script src="game.js"></script>
+</body>
+</html>

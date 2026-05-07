@@ -513,7 +513,7 @@
       "buildVolumeMM": [300, 220, 180],
       "maxSpeedMMs": null,
       "throughputCM3PH": 50,
-      "materials": ["metal-17-4ph", "metal-h13", "metal-a2", "metal-d2", "metal-inconel-625", "metal-copper", "metal-titanium"],
+      "materials": ["metal-ss17-4ph", "metal-h13", "metal-a2", "metal-d2", "metal-inconel-625", "metal-copper", "metal-ti6al4v"],
       "enclosed": true,
       "multiMaterialColors": 0,
       "autoLevel": true,
