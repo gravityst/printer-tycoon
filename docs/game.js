@@ -5,7 +5,7 @@
 const STATE_KEY = 'printer-tycoon-state-v2';
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
-const ORDER_SPAWN_BASE_HOURS = 14;
+const ORDER_SPAWN_BASE_HOURS = 5;
 
 const STARTING_PRINTER = 'ender-3-v3-se';
 const STARTING_MONEY = 500;
@@ -109,7 +109,7 @@ function defaultState() {
     printers: [{ printerId: STARTING_PRINTER, slotId: 1, state: 'idle', job: null }],
     inventory: { [STARTING_FILAMENT_ID]: STARTING_FILAMENT_GRAMS },
     orders: [],
-    nextOrderInHours: 1,
+    nextOrderInHours: 0.5,
     nextOrderId: 1,
     nextSlotId: 2,
   };
@@ -407,27 +407,30 @@ function tick() {
 // CANVAS RENDERING — printers + growing models
 // =====================================================================
 
-function setupCanvas(canvas, w, h) {
+// Read the canvas's CSS-determined display size (clientWidth/Height) and
+// match the bitmap to it × devicePixelRatio. Returns drawing dims in CSS pixels.
+function setupCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
-  if (canvas.dataset.dpr === String(dpr) && canvas.width === w * dpr) {
-    return canvas.getContext('2d');
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (w === 0 || h === 0) return null;
+  const targetW = Math.round(w * dpr);
+  const targetH = Math.round(h * dpr);
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
   }
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
-  canvas.style.width = w + 'px';
-  canvas.style.height = h + 'px';
   const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  canvas.dataset.dpr = String(dpr);
-  return ctx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
 }
 
 function drawPrinter(canvas, slot) {
   const printer = printerById(slot.printerId);
   if (!printer) return;
-  const w = parseInt(canvas.getAttribute('width'), 10);
-  const h = parseInt(canvas.getAttribute('height'), 10);
-  const ctx = setupCanvas(canvas, w, h);
+  const setup = setupCanvas(canvas);
+  if (!setup) return;
+  const { ctx, w, h } = setup;
 
   // Background workshop floor
   ctx.fillStyle = '#f3f4f6';
