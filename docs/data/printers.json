@@ -350,6 +350,28 @@
       "notes": "Open-source DIY. Parts cost shown; you supply 40+ hours and significant skill. Highest reliability and customization ceiling once built."
     },
     {
+      "id": "bcn3d-sigma-d25",
+      "brand": "BCN3D",
+      "model": "Sigma D25",
+      "tech": "FDM",
+      "tier": "pro",
+      "price": 4500,
+      "buildVolumeMM": [420, 300, 200],
+      "maxSpeedMMs": 200,
+      "throughputGPH": 32,
+      "materials": ["pla", "pla-plus", "petg", "abs", "asa", "pc", "tpu-95a", "nylon-pa12", "pa-cf"],
+      "enclosed": false,
+      "multiMaterialColors": 2,
+      "autoLevel": true,
+      "baseReliability": 0.90,
+      "precision": 0.85,
+      "powerW": 600,
+      "skillRequired": 0.20,
+      "footprintMM": [690, 530],
+      "released": 2020,
+      "notes": "Spanish IDEX (Independent Dual Extruder) workhorse. True dual-material with zero purge waste — both heads print simultaneously. Add-on enclosure required for ABS/ASA-class materials."
+    },
+    {
       "id": "elegoo-mars-5",
       "brand": "Elegoo",
       "model": "Mars 5",
