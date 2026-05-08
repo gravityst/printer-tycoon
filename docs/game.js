@@ -455,6 +455,15 @@ function rejectOrder(orderId) {
   render();
 }
 
+function rejectAllOrders() {
+  if (state.orders.length === 0) return;
+  if (!confirm(`Decline all ${state.orders.length} pending orders?`)) return;
+  const n = state.orders.length;
+  state.orders = [];
+  toast(`Declined ${n} orders`, 'success');
+  render();
+}
+
 function buyMaterial(matId, qty) {
   const m = materialById(matId);
   if (!m) return;
@@ -567,6 +576,39 @@ const SUPPLIES_CATALOG = [
   { brand: 'Phrozen',    name: 'Castable Wax 40%',   material: 'resin-castable',color: 'Purple',         hex: '#a855f7', costPerLiter: 180 },
   { brand: 'Formlabs',   name: 'Castable Wax 40',    material: 'resin-castable',color: 'Purple',         hex: '#a855f7', costPerLiter: 220 },
   { brand: 'Formlabs',   name: 'Tough 2000',         material: 'resin-engineering', color: 'Amber',      hex: '#fde68a', costPerLiter: 200 },
+  // ---- SLS Powders (Formlabs Fuse, BASF Ultrasint, Sinterit) ----
+  { brand: 'Formlabs',   name: 'Fuse Nylon 12',       material: 'sls-pa12',     color: 'Gray',          hex: '#94a3b8', costPerKg: 110 },
+  { brand: 'Formlabs',   name: 'Fuse Nylon 11',       material: 'sls-pa11',     color: 'Natural',       hex: '#e5e0d3', costPerKg: 200 },
+  { brand: 'Formlabs',   name: 'Fuse PA12 GF',        material: 'sls-pa12-gf',  color: 'Light Gray',    hex: '#cbd5e1', costPerKg: 130 },
+  { brand: 'Formlabs',   name: 'Fuse TPU 90A',        material: 'sls-tpu',      color: 'Off-White',     hex: '#e7e5e4', costPerKg: 200 },
+  { brand: 'BASF',       name: 'Ultrasint PA12',      material: 'sls-pa12',     color: 'White',         hex: '#fafafa', costPerKg: 95 },
+  { brand: 'BASF',       name: 'Ultrasint PA11 ESD',  material: 'sls-pa11',     color: 'Carbon Black',  hex: '#1a1a1a', costPerKg: 220 },
+  // ---- MJF Powders (HP, Lubrizol, Evonik) ----
+  { brand: 'HP',         name: '3D HR PA 12',         material: 'mjf-pa12',     color: 'Light Gray',    hex: '#cbd5e1', costPerKg: 90 },
+  { brand: 'HP',         name: '3D HR PA 11',         material: 'mjf-pa11',     color: 'Natural',       hex: '#e5e0d3', costPerKg: 120 },
+  { brand: 'HP',         name: '3D HR TPU',           material: 'mjf-tpu',      color: 'Black',         hex: '#0a0a0a', costPerKg: 150 },
+  { brand: 'HP',         name: '3D HR PA 12 GB',      material: 'mjf-pa12-gb',  color: 'Light Gray',    hex: '#d1d5db', costPerKg: 110 },
+  { brand: 'Evonik',     name: 'INFINAM TPC',         material: 'mjf-tpu',      color: 'Natural',       hex: '#e5e7eb', costPerKg: 165 },
+  // ---- DMLS / SLM Metal Powders (EOS, GE Additive, Sandvik) ----
+  { brand: 'EOS',        name: 'StainlessSteel 316L', material: 'metal-ss316l', color: 'Steel Gray',    hex: '#94a3b8', costPerKg: 150 },
+  { brand: 'EOS',        name: 'StainlessSteel 17-4PH', material: 'metal-ss17-4ph', color: 'Steel Gray', hex: '#94a3b8', costPerKg: 180 },
+  { brand: 'EOS',        name: 'ToolSteel H13',       material: 'metal-h13',    color: 'Dark Gray',     hex: '#475569', costPerKg: 250 },
+  { brand: 'EOS',        name: 'ToolSteel A2',        material: 'metal-a2',     color: 'Dark Gray',     hex: '#475569', costPerKg: 240 },
+  { brand: 'EOS',        name: 'ToolSteel D2',        material: 'metal-d2',     color: 'Dark Gray',     hex: '#475569', costPerKg: 250 },
+  { brand: 'EOS',        name: 'Aluminium AlSi10Mg',  material: 'metal-alsi10mg', color: 'Aluminum',    hex: '#cbd5e1', costPerKg: 130 },
+  { brand: 'EOS',        name: 'Titanium Ti-6Al-4V',  material: 'metal-ti6al4v',color: 'Titanium Gray', hex: '#9ca3af', costPerKg: 400 },
+  { brand: 'EOS',        name: 'NickelAlloy IN625',   material: 'metal-inconel-625', color: 'Nickel',   hex: '#b8b8b8', costPerKg: 380 },
+  { brand: 'EOS',        name: 'NickelAlloy IN718',   material: 'metal-inconel-718', color: 'Nickel',   hex: '#b8b8b8', costPerKg: 500 },
+  { brand: 'EOS',        name: 'MaragingSteel MS1',   material: 'metal-maraging', color: 'Dark Steel',  hex: '#475569', costPerKg: 220 },
+  { brand: 'EOS',        name: 'CopperAlloy CuCrZr',  material: 'metal-copper', color: 'Copper',        hex: '#b87333', costPerKg: 300 },
+  { brand: 'GE Additive',name: 'AlSi10Mg',            material: 'metal-alsi10mg', color: 'Aluminum',    hex: '#cbd5e1', costPerKg: 110 },
+  { brand: 'Sandvik',    name: 'Osprey Ti-6Al-4V',    material: 'metal-ti6al4v',color: 'Titanium Gray', hex: '#9ca3af', costPerKg: 350 },
+  // ---- Markforged consumables (Onyx, Nylon White, continuous fibers) ----
+  { brand: 'Markforged', name: 'Onyx',                material: 'onyx',         color: 'Matte Black',   hex: '#1a1a1a', costPerKg: 190 },
+  { brand: 'Markforged', name: 'Nylon White',         material: 'nylon-white',  color: 'White',         hex: '#fafafa', costPerKg: 175 },
+  { brand: 'Markforged', name: 'Continuous Carbon Fiber', material: 'fiber-carbon', color: 'Black',     hex: '#000000', costPerKg: 120 },
+  { brand: 'Markforged', name: 'Continuous Kevlar',   material: 'fiber-kevlar', color: 'Yellow',        hex: '#fbbf24', costPerKg: 100 },
+  { brand: 'Markforged', name: 'Continuous Fiberglass', material: 'fiber-fiberglass', color: 'White',   hex: '#fafafa', costPerKg: 50 },
 ];
 
 let suppliesFilter = 'all';
@@ -608,9 +650,15 @@ function renderSupplies() {
   const root = document.getElementById('suppliesList');
   if (!root) return;
   let list = SUPPLIES_CATALOG.map((item, i) => ({ ...item, idx: i }));
+  const isPowder = i => i.material.startsWith('sls-') || i.material.startsWith('mjf-');
+  const isMetal = i => i.material.startsWith('metal-');
+  const isFiber = i => i.material.startsWith('fiber-') || i.material === 'onyx' || i.material === 'nylon-white';
   if (suppliesFilter !== 'all') {
-    if (suppliesFilter === 'filament') list = list.filter(i => i.costPerKg);
+    if (suppliesFilter === 'filament') list = list.filter(i => i.costPerKg && !isPowder(i) && !isMetal(i) && !isFiber(i));
     else if (suppliesFilter === 'resin') list = list.filter(i => i.costPerLiter);
+    else if (suppliesFilter === 'powder') list = list.filter(isPowder);
+    else if (suppliesFilter === 'metal') list = list.filter(isMetal);
+    else if (suppliesFilter === 'fiber') list = list.filter(isFiber);
     else list = list.filter(i => i.material === suppliesFilter);
   }
   root.innerHTML = '';
@@ -2201,7 +2249,9 @@ function renderOrders() {
     root.innerHTML = '<div class="empty">No incoming orders. Hang tight…</div>';
     return;
   }
-  root.innerHTML = '';
+  root.innerHTML = state.orders.length >= 3
+    ? `<div class="orders-toolbar"><button class="reject-all-btn" onclick="window.rejectAllOrders()">Decline all ${state.orders.length}</button></div>`
+    : '';
   state.orders.forEach(order => {
     const el = document.createElement('div');
     el.className = 'order-card';
@@ -2343,6 +2393,7 @@ function cycleSpeed() {
 
 window.assignOrder = assignOrder;
 window.rejectOrder = rejectOrder;
+window.rejectAllOrders = rejectAllOrders;
 window.buyMaterial = buyMaterial;
 window.buyPrinter = buyPrinter;
 window.openShop = openShop;

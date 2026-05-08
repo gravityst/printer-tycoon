@@ -344,6 +344,29 @@
     font-size: 11px;
     font-weight: 600;
   }
+  .orders-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 10px;
+  }
+  .reject-all-btn {
+    padding: 6px 12px;
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .reject-all-btn:hover {
+    background: #b91c1c;
+    color: white;
+    border-color: #b91c1c;
+  }
 
   /* ---- Material card ---- */
   .mat-card {
@@ -590,6 +613,9 @@
       <button class="active" data-filter="all" onclick="window.setSuppliesFilter('all')">All</button>
       <button data-filter="filament" onclick="window.setSuppliesFilter('filament')">Filament</button>
       <button data-filter="resin" onclick="window.setSuppliesFilter('resin')">Resin</button>
+      <button data-filter="powder" onclick="window.setSuppliesFilter('powder')">SLS/MJF Powder</button>
+      <button data-filter="metal" onclick="window.setSuppliesFilter('metal')">Metal Powder</button>
+      <button data-filter="fiber" onclick="window.setSuppliesFilter('fiber')">Markforged</button>
       <button data-filter="pla" onclick="window.setSuppliesFilter('pla')">PLA</button>
       <button data-filter="petg" onclick="window.setSuppliesFilter('petg')">PETG</button>
       <button data-filter="abs" onclick="window.setSuppliesFilter('abs')">ABS</button>
