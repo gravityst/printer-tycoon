@@ -548,6 +548,31 @@ function ensureScene(canvas, slot) {
 // ---------------------------------------------------------------------
 // FDM / FFF (Cartesian or CoreXY)
 // ---------------------------------------------------------------------
+// Helper: NEMA 17 stepper motor
+function makeStepperMotor(THREE, mat, capMat, scale = 1.0) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.7*scale, 0.7*scale, 0.7*scale), mat);
+  body.castShadow = true;
+  g.add(body);
+  // Front face cap with shaft (lighter color)
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.55*scale, 0.55*scale, 0.05*scale), capMat);
+  cap.position.z = 0.36*scale;
+  g.add(cap);
+  // Output shaft
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05*scale, 0.05*scale, 0.3*scale, 12), capMat);
+  shaft.rotation.x = Math.PI/2;
+  shaft.position.z = 0.5*scale;
+  g.add(shaft);
+  // Mounting holes (4 small pegs visible at corners)
+  for (const [dx, dy] of [[-0.27, -0.27], [0.27, -0.27], [-0.27, 0.27], [0.27, 0.27]]) {
+    const peg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 6), capMat);
+    peg.rotation.x = Math.PI/2;
+    peg.position.set(dx*scale, dy*scale, 0.36*scale);
+    g.add(peg);
+  }
+  return g;
+}
+
 function buildFDM3D(printer) {
   const THREE = window.THREE;
   const group = new THREE.Group();
@@ -563,22 +588,61 @@ function buildFDM3D(printer) {
   ]);
   const isCantilever = cantileverIds.has(printer.id);
 
-  // Electronics base (the box that holds the mainboard, where the LCD lives)
+  // Common materials
+  const stepperMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.45, metalness: 0.6 });
+  const stepperCapMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.85 });
+  const beltMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.85, metalness: 0.0 });
+  const leadMat = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.4, metalness: 0.85 });
+  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.2, metalness: 0.95 });
+  const wireMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7 });
+  const tubeMat = new THREE.MeshStandardMaterial({ color: 0xfafafa, roughness: 0.5 });
+  const knobMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.7 });
+
+  // ---- ELECTRONICS BASE ----
   const baseMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.5, metalness: 0.4 });
   const base = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.6, 4.2), baseMat);
   base.position.set(0, 0.3, 0);
   base.castShadow = true;
   base.receiveShadow = true;
   group.add(base);
+  // Vent grilles on side
+  for (let i = 0; i < 6; i++) {
+    const slat = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.5), beltMat);
+    slat.position.set(2.78, 0.18 + i*0.09, 0);
+    group.add(slat);
+  }
+  // Power inlet on the back (small box)
+  const inletMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.6, metalness: 0.4 });
+  const inlet = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.08), inletMat);
+  inlet.position.set(-1.5, 0.4, -2.13);
+  group.add(inlet);
 
-  // Y-axis bed carrier (bed slides forward/back on this platform)
+  // ---- Y-AXIS CARRIER + RAILS + STEPPER + BELT ----
   const carrierMat = new THREE.MeshStandardMaterial({ color: panelColor, roughness: 0.6, metalness: 0.3 });
   const carrier = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.12, 4.3), carrierMat);
   carrier.position.set(0, 0.66, 0);
   carrier.receiveShadow = true;
   group.add(carrier);
+  // Y-axis linear guide rails (chrome rods on each side)
+  for (const xPos of [-1.95, 1.95]) {
+    const yRail = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 4.2, 12), chromeMat);
+    yRail.rotation.x = Math.PI / 2;
+    yRail.position.set(xPos, 0.74, 0);
+    group.add(yRail);
+  }
+  // Y-axis stepper motor at the back
+  const yStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.85);
+  yStepper.position.set(0, 0.5, -2.4);
+  yStepper.rotation.y = Math.PI;
+  group.add(yStepper);
+  // Y-axis belt (visible black rubber loop along axis)
+  for (const xPos of [-0.5, 0.5]) {
+    const yBelt = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 4.0), beltMat);
+    yBelt.position.set(xPos, 0.62, 0);
+    group.add(yBelt);
+  }
 
-  // Heated bed
+  // ---- HEATED BED + PEI + LEVELING WHEELS ----
   const bedMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.55, metalness: 0.4 });
   const bed = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.10, 4.0), bedMat);
   bed.position.set(0, 0.77, 0);
@@ -591,11 +655,24 @@ function buildFDM3D(printer) {
   pei.position.set(0, 0.84, 0);
   pei.receiveShadow = true;
   group.add(pei);
-  // Bed handle clip on the front edge (recognizable Ender detail)
+  // Bed handle clip on the front edge
   const clipMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.5 });
   const clip = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.15), clipMat);
   clip.position.set(0, 0.84, 1.95);
   group.add(clip);
+  // Bed leveling wheels (4 colored knurled wheels at corners)
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0xfb923c, roughness: 0.55, metalness: 0.2 });
+  for (const [wx, wz] of [[-1.85, -1.85], [1.85, -1.85], [-1.85, 1.85], [1.85, 1.85]]) {
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.08, 16), wheelMat);
+    wheel.position.set(wx, 0.7, wz);
+    wheel.castShadow = true;
+    group.add(wheel);
+  }
+  // Heater wires (red) hanging from bed back
+  const heaterWireMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.6 });
+  const heaterWire = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.6, 8), heaterWireMat);
+  heaterWire.position.set(0, 0.45, -2.0);
+  group.add(heaterWire);
 
   // Frame — posts and top crossbar
   const postMat = new THREE.MeshStandardMaterial({ color: frameColor, roughness: 0.45, metalness: 0.5 });
@@ -604,7 +681,7 @@ function buildFDM3D(printer) {
 
   let postPositions;
   if (isCantilever) {
-    // 2 back posts only, more substantial (40×40 extrusion look)
+    // 2 thick back posts (40×40 extrusion look)
     postPositions = [[-2.0, postH/2 + 0.6, -1.85], [2.0, postH/2 + 0.6, -1.85]];
     const backPostGeo = new THREE.BoxGeometry(0.4, postH, 0.4);
     postPositions.forEach(([x, y, z]) => {
@@ -614,10 +691,29 @@ function buildFDM3D(printer) {
       group.add(post);
     });
     // Top crossbar between back posts
-    const cross = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.28, 0.28), postMat);
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.4, 0.4), postMat);
     cross.position.set(0, postH + 0.6, -1.85);
     cross.castShadow = true;
     group.add(cross);
+    // ---- Z-AXIS LEAD SCREW + STEPPER (right back post) ----
+    const leadScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, postH - 0.4, 16), leadMat);
+    leadScrew.position.set(1.6, postH/2 + 0.6, -1.85);
+    group.add(leadScrew);
+    // Coupler (small black cylinder between motor and screw)
+    const couplerMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4, metalness: 0.7 });
+    const coupler = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.22, 12), couplerMat);
+    coupler.position.set(1.6, 0.78, -1.85);
+    group.add(coupler);
+    // Z-axis stepper motor at the bottom of the lead screw
+    const zStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.85);
+    zStepper.rotation.x = Math.PI / 2;
+    zStepper.position.set(1.6, 0.45, -1.85);
+    group.add(zStepper);
+    // Endstop sensor at the top of left post
+    const endstopMat = new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.5 });
+    const endstop = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.08), endstopMat);
+    endstop.position.set(-2.0, 1.0, -1.65);
+    group.add(endstop);
   } else {
     // 4 corner posts (cube / CoreXY)
     postPositions = [
@@ -640,7 +736,26 @@ function buildFDM3D(printer) {
       m.castShadow = true;
       group.add(m);
     });
+    // ---- DUAL Z-AXIS LEAD SCREWS + DUAL STEPPERS (CoreXY style) ----
+    for (const xPos of [-1.95, 1.95]) {
+      const leadScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, postH - 0.4, 16), leadMat);
+      leadScrew.position.set(xPos, postH/2 + 0.6, -1.6);
+      group.add(leadScrew);
+      const zStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.8);
+      zStepper.rotation.x = Math.PI / 2;
+      zStepper.position.set(xPos, 0.45, -1.6);
+      group.add(zStepper);
+    }
   }
+  // ---- X-AXIS STEPPER MOTOR (on the gantry, at the left end) ----
+  const xStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.8);
+  xStepper.rotation.y = Math.PI / 2;
+  if (isCantilever) {
+    xStepper.position.set(-2.5, postH * 0.7 + 0.6, -1.55);
+  } else {
+    xStepper.position.set(-2.45, postH * 0.7 + 0.6, 0);
+  }
+  group.add(xStepper);
 
   // ---- Z-Carriage: gantry rail + print head (moves UP as model grows) ----
   const zCarriage = new THREE.Group();
@@ -658,31 +773,71 @@ function buildFDM3D(printer) {
   rail2.castShadow = true;
   zCarriage.add(rail2);
 
-  // Print head (rides the rail in X)
+  // ---- DETAILED PRINT HEAD ----
   const headGroup = new THREE.Group();
+  // Carriage block (mounts to the rail)
+  const carriageMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5, metalness: 0.5 });
+  const carriageBlock = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 0.55), carriageMat);
+  carriageBlock.position.set(0, 0.05, 0);
+  carriageBlock.castShadow = true;
+  headGroup.add(carriageBlock);
+  // Main extruder body (accent-colored)
   const headMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.45, metalness: 0.4 });
-  const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.85, 0.85), headMat);
-  headBox.position.set(0, -0.15, 0);
+  const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.75), headMat);
+  headBox.position.set(0, -0.2, 0);
   headBox.castShadow = true;
   headGroup.add(headBox);
-  // Hot end — silver block beneath the head
-  const hotMat = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.3, metalness: 0.9 });
-  const hot = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.32, 0.36), hotMat);
-  hot.position.set(0, -0.7, 0);
-  hot.castShadow = true;
-  headGroup.add(hot);
+  // Direct-drive extruder motor on top of the head (NEMA17, smaller scale)
+  const exStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.55);
+  exStepper.rotation.x = -Math.PI / 2;  // shaft points down into the extruder
+  exStepper.position.set(0, 0.45, 0);
+  headGroup.add(exStepper);
+  // Hot end — heatsink (silver fins)
+  const heatsinkMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.25, metalness: 0.95 });
+  for (let i = 0; i < 4; i++) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 0.36), heatsinkMat);
+    fin.position.set(0, -0.55 - i * 0.06, 0);
+    headGroup.add(fin);
+  }
+  // Heater block (black)
+  const heaterMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.7, metalness: 0.4 });
+  const heater = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.28), heaterMat);
+  heater.position.set(0, -0.85, 0);
+  heater.castShadow = true;
+  headGroup.add(heater);
   // Brass nozzle — pointing down
   const nozMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.3, metalness: 0.9 });
-  const noz = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.18, 16), nozMat);
+  const noz = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.16, 16), nozMat);
   noz.rotation.x = Math.PI;
-  noz.position.set(0, -0.95, 0);
+  noz.position.set(0, -1.02, 0);
   headGroup.add(noz);
-  // Cooling fan duct (in front)
-  const fanMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.6 });
-  const fan = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.25, 0.35), fanMat);
-  fan.position.set(0, -0.4, 0.4);
-  fan.castShadow = true;
-  headGroup.add(fan);
+  // Part-cooling fan (front, larger)
+  const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.55, metalness: 0.3 });
+  const fan1Shell = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.55, 0.18), fanShellMat);
+  fan1Shell.position.set(0, -0.3, 0.4);
+  fan1Shell.castShadow = true;
+  headGroup.add(fan1Shell);
+  // Fan grill (black circle hint)
+  const fanGrillMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.8 });
+  const fanGrill = new THREE.Mesh(new THREE.CircleGeometry(0.2, 16), fanGrillMat);
+  fanGrill.position.set(0, -0.3, 0.5);
+  headGroup.add(fanGrill);
+  // Hot-end side fan (smaller, perpendicular)
+  const fan2 = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.4, 0.4), fanShellMat);
+  fan2.position.set(0.42, -0.05, 0);
+  fan2.castShadow = true;
+  headGroup.add(fan2);
+  // PTFE/Bowden tube going up to the spool area
+  const tubeGeo = new THREE.CylinderGeometry(0.05, 0.05, 1.6, 8);
+  const tube = new THREE.Mesh(tubeGeo, tubeMat);
+  tube.position.set(0, 1.1, 0);
+  tube.rotation.x = Math.PI / 14;
+  headGroup.add(tube);
+  // Cable bundle (black wires curving up)
+  const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.0, 6), wireMat);
+  cable.position.set(-0.35, 0.6, 0.0);
+  cable.rotation.x = Math.PI / 12;
+  headGroup.add(cable);
   // For cantilever: head sits on the front of the rail
   if (isCantilever) headGroup.position.z = -1.0;
   zCarriage.add(headGroup);
@@ -723,7 +878,6 @@ function buildFDM3D(printer) {
   lcd.position.set(0.7, 0.45, 2.13);
   group.add(lcd);
   // Knob next to LCD
-  const knobMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.7 });
   const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.08, 24), knobMat);
   knob.rotation.x = Math.PI / 2;
   knob.position.set(1.7, 0.45, 2.13);
@@ -772,76 +926,150 @@ function buildResin3D(printer) {
   const group = new THREE.Group();
   const colors = BRAND_COLORS[printer.brand] || { frame: 0x222222, accent: 0xa855f7, panel: 0x111827 };
 
-  // Cabinet body
-  const cabMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.6, metalness: 0.3 });
-  const cab = new THREE.Mesh(new THREE.BoxGeometry(3.5, 5.5, 3.5), cabMat);
-  cab.position.y = 2.75;
+  const stepperMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.45, metalness: 0.6 });
+  const stepperCapMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.85 });
+  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.2, metalness: 0.95 });
+  const blackMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.55, metalness: 0.3 });
+
+  // ---- ELECTRONICS BASE (where the LCD touchscreen lives) ----
+  const baseMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.55, metalness: 0.4 });
+  const electBase = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.7, 3.4), baseMat);
+  electBase.position.set(0, 0.35, 0);
+  electBase.castShadow = true;
+  electBase.receiveShadow = true;
+  group.add(electBase);
+  // Vent grilles on the side
+  for (let i = 0; i < 5; i++) {
+    const slat = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.4), blackMat);
+    slat.position.set(1.72, 0.18 + i*0.10, 0);
+    group.add(slat);
+  }
+
+  // ---- LCD TOUCHSCREEN on front ----
+  const bezelMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4, metalness: 0.0 });
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.55, 0.05), bezelMat);
+  bezel.position.set(0, 0.4, 1.74);
+  group.add(bezel);
+  const screenMat = new THREE.MeshStandardMaterial({
+    color: 0x111111, roughness: 0.1, metalness: 0.0,
+    emissive: 0x22d3ee, emissiveIntensity: 0.65
+  });
+  const screen = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.45, 0.06), screenMat);
+  screen.position.set(0, 0.4, 1.76);
+  group.add(screen);
+  // Brand badge
+  const badgeMat = new THREE.MeshStandardMaterial({
+    color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.4, roughness: 0.3
+  });
+  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.14, 0.03), badgeMat);
+  badge.position.set(0, 0.78, 1.76);
+  group.add(badge);
+
+  // ---- INNER CABINET BODY (above the electronics base) ----
+  const cabMat = new THREE.MeshStandardMaterial({ color: colors.frame, roughness: 0.5, metalness: 0.45 });
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(3.4, 4.0, 3.4), cabMat);
+  cab.position.set(0, 2.75, 0);
   cab.castShadow = true;
   cab.receiveShadow = true;
   group.add(cab);
-  // Frame trim
-  const trimMat = new THREE.MeshStandardMaterial({ color: colors.frame, roughness: 0.5, metalness: 0.5 });
-  const trimGeo = new THREE.BoxGeometry(3.7, 0.2, 3.7);
-  const trimTop = new THREE.Mesh(trimGeo, trimMat); trimTop.position.y = 5.55; group.add(trimTop);
-  const trimBot = new THREE.Mesh(trimGeo, trimMat); trimBot.position.y = 0.05; group.add(trimBot);
 
-  // Vat (translucent purple) at the bottom inside
-  const vatMat = new THREE.MeshPhysicalMaterial({
-    color: 0xa855f7,
-    transparent: true,
-    opacity: 0.55,
-    roughness: 0.05,
-    metalness: 0.0,
-    transmission: 0.6,
+  // ---- LIFT-OFF UV COVER (translucent yellow/orange — like a real MSLA hood) ----
+  const coverMat = new THREE.MeshPhysicalMaterial({
+    color: 0xff8c00, transparent: true, opacity: 0.42,
+    roughness: 0.1, metalness: 0.0, transmission: 0.5, thickness: 0.05
   });
-  const vat = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.0, 2.4), vatMat);
-  vat.position.set(0, 1.3, 0);
+  // 4 walls + roof of the lift-off hood
+  const sideX = new THREE.PlaneGeometry(3.0, 3.6);
+  const sideZ = new THREE.PlaneGeometry(3.0, 3.6);
+  const front = new THREE.Mesh(sideX, coverMat); front.position.set(0, 2.75, 1.71); front.material.side = THREE.DoubleSide; group.add(front);
+  const back = new THREE.Mesh(sideX, coverMat); back.position.set(0, 2.75, -1.71); back.rotation.y = Math.PI; back.material.side = THREE.DoubleSide; group.add(back);
+  const left = new THREE.Mesh(sideZ, coverMat); left.position.set(-1.71, 2.75, 0); left.rotation.y = Math.PI/2; left.material.side = THREE.DoubleSide; group.add(left);
+  const right = new THREE.Mesh(sideZ, coverMat); right.position.set(1.71, 2.75, 0); right.rotation.y = -Math.PI/2; right.material.side = THREE.DoubleSide; group.add(right);
+  const top = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 3.0), coverMat);
+  top.position.set(0, 4.55, 0);
+  top.rotation.x = Math.PI/2;
+  top.material.side = THREE.DoubleSide;
+  group.add(top);
+  // Cover handle on top
+  const handleMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.7 });
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.12, 0.18), handleMat);
+  handle.position.set(0, 4.6, 0);
+  group.add(handle);
+
+  // ---- INSIDE: VAT + RESIN ----
+  const vatMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.5, metalness: 0.5 });
+  const vat = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.45, 2.4), vatMat);
+  vat.position.set(0, 1.0, 0);
   group.add(vat);
-  const vatRim = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.1, 2.6), trimMat);
-  vatRim.position.y = 1.85;
-  group.add(vatRim);
-
-  // Z-screw on the back interior
-  const zMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.4, metalness: 0.7 });
-  const zScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3.5, 12), zMat);
-  zScrew.position.set(0, 3.2, -1.4);
-  group.add(zScrew);
-
-  // Z-axis guide rails (chrome)
-  const guideMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.2, metalness: 0.9 });
-  const guideGeo = new THREE.CylinderGeometry(0.05, 0.05, 3.5, 12);
-  [-0.4, 0.4].forEach(x => {
-    const g = new THREE.Mesh(guideGeo, guideMat);
-    g.position.set(x, 3.2, -1.4);
-    group.add(g);
+  // Resin (purple, in the vat)
+  const resinMat = new THREE.MeshPhysicalMaterial({
+    color: 0xa855f7, transparent: true, opacity: 0.7, roughness: 0.05, transmission: 0.5
   });
+  const resin = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.18, 2.2), resinMat);
+  resin.position.set(0, 1.05, 0);
+  group.add(resin);
+  // Vat rim trim
+  const rimMat = new THREE.MeshStandardMaterial({ color: colors.accent, roughness: 0.4, metalness: 0.5 });
+  const rim = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.08, 2.6), rimMat);
+  rim.position.set(0, 1.25, 0);
+  group.add(rim);
 
-  // Build plate (metal) — moves up as print progresses
-  const plateMat = new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.3, metalness: 0.8 });
-  const plate = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 2.0), plateMat);
-  plate.position.set(0, 1.85, 0); // resting position over vat
+  // ---- Z-AXIS: BALL SCREW + DUAL CHROME RAILS + STEPPER ----
+  const ballMat = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.4, metalness: 0.85 });
+  const ballScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3.4, 16), ballMat);
+  ballScrew.position.set(0, 3.0, -1.45);
+  group.add(ballScrew);
+  // Z guide rails (chrome rods, parallel to ball screw)
+  for (const x of [-0.45, 0.45]) {
+    const guide = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 3.4, 12), chromeMat);
+    guide.position.set(x, 3.0, -1.45);
+    group.add(guide);
+  }
+  // Z-stepper at the top
+  const zStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.85);
+  zStepper.rotation.x = Math.PI / 2;
+  zStepper.position.set(0, 4.85, -1.45);
+  group.add(zStepper);
+
+  // ---- BUILD PLATE + LEVELING CAP ----
+  const plateMat = new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.3, metalness: 0.85 });
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.12, 1.8), plateMat);
+  plate.position.set(0, 1.55, 0);
   plate.castShadow = true;
   group.add(plate);
-  // Plate arm to z-screw
-  const armMat = trimMat;
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.2, 1.4), armMat);
-  arm.position.set(0, 1.95, -0.7);
+  // Leveling cap (knurled cylinder on top of plate)
+  const capMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.4, metalness: 0.6 });
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.18, 24), capMat);
+  cap.position.set(0, 1.7, 0);
+  group.add(cap);
+  // Plate arm (slot holding it on the screw)
+  const armMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.6 });
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.15, 1.3), armMat);
+  arm.position.set(0, 1.65, -0.65);
   group.add(arm);
 
-  // LED display panel on front
-  const lcdMat = new THREE.MeshStandardMaterial({ color: 0x0c4a6e, emissive: 0x22d3ee, emissiveIntensity: 0.6, roughness: 0.2 });
-  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.9, 0.08), lcdMat);
-  lcd.position.set(0, 4.4, 1.79);
-  group.add(lcd);
-  // Brand badge
-  const badgeMat = new THREE.MeshStandardMaterial({ color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.3 });
-  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.04), badgeMat);
-  badge.position.set(0, 5.2, 1.79);
-  group.add(badge);
+  // ---- ACTIVATED CARBON AIR FILTER on top corner ----
+  const filterMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.7, metalness: 0.0 });
+  const filter = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.3, 0.7), filterMat);
+  filter.position.set(-1.0, 4.85, 1.0);
+  group.add(filter);
+  // Filter mesh grill
+  const gridMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.5, metalness: 0.3 });
+  const grid = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.04, 0.6), gridMat);
+  grid.position.set(-1.0, 5.02, 1.0);
+  group.add(grid);
+
+  // Status LED on top
+  const ledMat = new THREE.MeshStandardMaterial({
+    color: 0x22c55e, emissive: 0x22c55e, emissiveIntensity: 0.7, roughness: 0.2
+  });
+  const led = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 8), ledMat);
+  led.position.set(1.0, 4.85, 1.0);
+  group.add(led);
 
   group.userData.plate = plate;
-  group.userData.plateRestY = 1.85;
-  group.userData.plateMaxY = 4.5;
+  group.userData.plateRestY = 1.7;  // leveling cap height
+  group.userData.plateMaxY = 4.4;
   group.userData.bedHalfSize = 1.0;
   return group;
 }
@@ -854,81 +1082,169 @@ function buildIndustrial3D(printer) {
   const group = new THREE.Group();
   const colors = BRAND_COLORS[printer.brand] || { frame: 0x222222, accent: 0xfbbf24, panel: 0x1f2937 };
 
-  // Big metal cabinet
-  const cabMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.55, metalness: 0.5 });
-  const cab = new THREE.Mesh(new THREE.BoxGeometry(5, 5.5, 4), cabMat);
+  const blackMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.7 });
+  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.9 });
+
+  // ---- MAIN STEEL CABINET ----
+  const cabMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.5, metalness: 0.55 });
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(5.5, 5.5, 4.2), cabMat);
   cab.position.y = 2.75;
   cab.castShadow = true;
   cab.receiveShadow = true;
   group.add(cab);
 
-  // Door panel (lighter color, inset)
-  const doorMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.5, metalness: 0.5 });
-  const door = new THREE.Mesh(new THREE.BoxGeometry(3.2, 4.2, 0.08), doorMat);
-  door.position.set(-0.6, 2.75, 2.05);
+  // Subtle vertical seam lines (panel separations) - cosmetic
+  for (const xPos of [-1.85, 0, 1.85]) {
+    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.02, 5.5, 0.02), blackMat);
+    seam.position.set(xPos, 2.75, 2.12);
+    group.add(seam);
+  }
+
+  // ---- LARGE FRONT DOOR with viewing window ----
+  const doorMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.45, metalness: 0.55 });
+  const door = new THREE.Mesh(new THREE.BoxGeometry(3.2, 4.4, 0.08), doorMat);
+  door.position.set(-0.7, 2.75, 2.13);
   group.add(door);
-
-  // Window in the door
+  // Window
   const winMat = new THREE.MeshPhysicalMaterial({
-    color: 0x1e293b,
-    transparent: true,
-    opacity: 0.7,
-    roughness: 0.05,
-    metalness: 0.0,
-    transmission: 0.3,
+    color: 0x1e293b, transparent: true, opacity: 0.7, roughness: 0.1,
+    metalness: 0.2, transmission: 0.4
   });
-  const win = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.6, 0.04), winMat);
-  win.position.set(-0.6, 3.4, 2.10);
+  const win = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.0, 0.04), winMat);
+  win.position.set(-0.7, 3.4, 2.18);
   group.add(win);
-
+  // Window frame
+  const winFrameMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.5, metalness: 0.5 });
+  const winFrame = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.1, 0.06), winFrameMat);
+  winFrame.position.set(-0.7, 3.4, 2.16);
+  group.add(winFrame);
   // Door handle
   const handleMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.9 });
-  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.6, 0.08), handleMat);
-  handle.position.set(0.85, 2.75, 2.10);
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.7, 0.08), handleMat);
+  handle.position.set(0.85, 2.75, 2.18);
   group.add(handle);
+  // Hinges (visible bolts on the left side of door)
+  for (let i = 0; i < 3; i++) {
+    const hinge = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.06), winFrameMat);
+    hinge.position.set(-2.27, 1.8 + i*1.2, 2.14);
+    group.add(hinge);
+  }
 
-  // Right-side control panel (dark with LEDs)
-  const panelMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.5 });
-  const panel = new THREE.Mesh(new THREE.BoxGeometry(1.4, 4.2, 0.08), panelMat);
-  panel.position.set(1.85, 2.75, 2.05);
-  group.add(panel);
-
-  // LCD screen on panel
-  const lcdMat = new THREE.MeshStandardMaterial({ color: 0x065f46, emissive: 0x22d3ee, emissiveIntensity: 0.7 });
-  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.7, 0.04), lcdMat);
-  lcd.position.set(1.85, 3.6, 2.10);
-  group.add(lcd);
-
-  // Status LEDs
+  // ---- HMI CONTROL PANEL (large touchscreen on right side) ----
+  const hmiBezelMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4 });
+  const hmiBody = new THREE.Mesh(new THREE.BoxGeometry(1.5, 4.4, 0.08), hmiBezelMat);
+  hmiBody.position.set(1.85, 2.75, 2.13);
+  group.add(hmiBody);
+  // HMI screen (touchscreen)
+  const hmiScreenMat = new THREE.MeshStandardMaterial({
+    color: 0x111111, roughness: 0.15, metalness: 0.0,
+    emissive: 0x22d3ee, emissiveIntensity: 0.55
+  });
+  const hmiScreen = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.6, 0.05), hmiScreenMat);
+  hmiScreen.position.set(1.85, 3.6, 2.18);
+  group.add(hmiScreen);
+  // Status LED row (3 colored LEDs)
   const ledColors = [0x22c55e, 0xfbbf24, 0xef4444];
   ledColors.forEach((c, i) => {
     const ledMat = new THREE.MeshStandardMaterial({
-      color: c, emissive: c, emissiveIntensity: 0.7,
+      color: c, emissive: c, emissiveIntensity: 0.85, roughness: 0.2
     });
     const led = new THREE.Mesh(new THREE.SphereGeometry(0.10, 12, 8), ledMat);
-    led.position.set(1.85, 2.7 - i * 0.3, 2.10);
+    led.position.set(1.5 + i*0.35, 2.3, 2.20);
     group.add(led);
   });
+  // E-stop button (red mushroom)
+  const eStopMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.55, metalness: 0.3 });
+  const eStop = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.18, 16), eStopMat);
+  eStop.rotation.x = Math.PI/2;
+  eStop.position.set(1.85, 1.7, 2.20);
+  group.add(eStop);
+  // E-stop top dome
+  const eStopTop = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 8, 0, Math.PI*2, 0, Math.PI/2), eStopMat);
+  eStopTop.rotation.x = -Math.PI/2;
+  eStopTop.position.set(1.85, 1.7, 2.30);
+  group.add(eStopTop);
+  // Yellow ring under E-stop
+  const ringMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.4 });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.04, 8, 24), ringMat);
+  ring.rotation.x = Math.PI / 2;
+  ring.position.set(1.85, 1.7, 2.18);
+  group.add(ring);
 
-  // Brand badge near the top
-  const badgeMat = new THREE.MeshStandardMaterial({ color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.4 });
-  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, 0.04), badgeMat);
-  badge.position.set(0, 4.7, 2.05);
-  group.add(badge);
-
-  // Caster wheels at corners of base
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.6 });
-  const wheelGeo = new THREE.SphereGeometry(0.18, 12, 12);
-  [[-2.3, -1.8], [2.3, -1.8], [-2.3, 1.8], [2.3, 1.8]].forEach(([x, z]) => {
-    const w = new THREE.Mesh(wheelGeo, wheelMat);
-    w.position.set(x, 0.18, z);
-    w.castShadow = true;
-    group.add(w);
+  // ---- STATUS TOWER (tri-color stack on top) ----
+  const towerBaseMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.4 });
+  // Pole
+  const towerPole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.6, 12), towerBaseMat);
+  towerPole.position.set(2.4, 5.85, -1.7);
+  group.add(towerPole);
+  // Mount base
+  const towerMount = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.18, 0.4), towerBaseMat);
+  towerMount.position.set(2.4, 5.55, -1.7);
+  group.add(towerMount);
+  // Three stacked colored cylinders (red top, yellow middle, green bottom — IEC standard)
+  const towerColors = [0xef4444, 0xfbbf24, 0x22c55e];
+  towerColors.forEach((c, i) => {
+    const segMat = new THREE.MeshStandardMaterial({
+      color: c, roughness: 0.3, metalness: 0.0,
+      emissive: c, emissiveIntensity: i === 2 ? 0.7 : 0.15,  // green is on
+      transparent: true, opacity: 0.85
+    });
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.4, 16), segMat);
+    seg.position.set(2.4, 6.4 - i*0.42, -1.7);
+    group.add(seg);
   });
+  // Tower top cap
+  const towerTopCap = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 8, 0, Math.PI*2, 0, Math.PI/2), towerBaseMat);
+  towerTopCap.position.set(2.4, 6.62, -1.7);
+  group.add(towerTopCap);
 
-  // Save references for animation
-  group.userData.lcd = lcd;
-  group.userData.leds = group.children.filter(c => c.material && c.material.emissiveIntensity > 0.5).slice(-3);
+  // ---- BRAND LABEL ----
+  const badgeMat = new THREE.MeshStandardMaterial({
+    color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.4, roughness: 0.3
+  });
+  const brandLabel = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.3, 0.04), badgeMat);
+  brandLabel.position.set(-0.7, 5.1, 2.16);
+  group.add(brandLabel);
+
+  // ---- VENTILATION GRILLE on top ----
+  const gridMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.7 });
+  for (let i = 0; i < 10; i++) {
+    const slat = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.04, 0.08), gridMat);
+    slat.position.set(-1.0, 5.52, -1.6 + i*0.16);
+    group.add(slat);
+  }
+  // Grille frame
+  const grilleFrameMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.5 });
+  const grilleFrame = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.06, 1.7), grilleFrameMat);
+  grilleFrame.position.set(-1.0, 5.51, -0.8);
+  group.add(grilleFrame);
+
+  // ---- LEVELING FEET (industrial pad-style, not casters) ----
+  const footMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.4 });
+  for (const [x, z] of [[-2.5, -1.85], [2.5, -1.85], [-2.5, 1.85], [2.5, 1.85]]) {
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.12, 16), footMat);
+    foot.position.set(x, 0.06, z);
+    foot.castShadow = true;
+    group.add(foot);
+    // Threaded shaft above the foot
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.18, 12), chromeMat);
+    shaft.position.set(x, 0.21, z);
+    group.add(shaft);
+  }
+
+  // ---- BOLT HEADS along the corners (subtle industrial detail) ----
+  const boltMat = handleMat;
+  for (let i = 0; i < 4; i++) {
+    const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8), boltMat);
+    bolt.rotation.x = Math.PI/2;
+    bolt.position.set(2.76, 0.7 + i*1.2, -1.85);
+    group.add(bolt);
+    const bolt2 = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8), boltMat);
+    bolt2.rotation.x = Math.PI/2;
+    bolt2.position.set(-2.76, 0.7 + i*1.2, -1.85);
+    group.add(bolt2);
+  }
+
   return group;
 }
 
