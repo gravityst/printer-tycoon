@@ -488,11 +488,11 @@ function createScene(canvas, printer) {
   fill.position.set(-6, 5, -8);
   scene.add(fill);
 
-  // Camera at 3/4 view
+  // Camera at 3/4 view, slightly closer for clearer printer detail
   const aspect = canvas.clientWidth / canvas.clientHeight;
-  const camera = new THREE.PerspectiveCamera(30, aspect, 0.1, 100);
-  camera.position.set(11, 7.5, 11);
-  camera.lookAt(0, 2.8, 0);
+  const camera = new THREE.PerspectiveCamera(38, aspect, 0.1, 100);
+  camera.position.set(7.5, 5.0, 8.5);
+  camera.lookAt(0, 2.0, 0);
 
   // Floor / workshop ground
   const floorGeo = new THREE.PlaneGeometry(40, 40);
@@ -556,146 +556,211 @@ function buildFDM3D(printer) {
   const accentColor = colors.accent;
   const panelColor = colors.panel;
 
-  // Base plate
-  const baseMat = new THREE.MeshStandardMaterial({ color: panelColor, roughness: 0.5, metalness: 0.4 });
-  const base = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.5, 5.5), baseMat);
-  base.position.y = 0.25;
+  // Determine chassis style — cantilever (Ender, Sovol, A1) vs cube (CoreXY, enclosed)
+  const cantileverIds = new Set([
+    'ender-3-v3-se', 'anycubic-kobra-2-neo', 'elegoo-neptune-4', 'sovol-sv06-plus',
+    'bambu-a1-mini', 'bambu-a1-ams-lite', 'prusa-mk4s',
+  ]);
+  const isCantilever = cantileverIds.has(printer.id);
+
+  // Electronics base (the box that holds the mainboard, where the LCD lives)
+  const baseMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.5, metalness: 0.4 });
+  const base = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.6, 4.2), baseMat);
+  base.position.set(0, 0.3, 0);
   base.castShadow = true;
   base.receiveShadow = true;
   group.add(base);
 
-  // Frame: 4 vertical posts + top frame
-  const postMat = new THREE.MeshStandardMaterial({ color: frameColor, roughness: 0.5, metalness: 0.4 });
-  const postH = 5.0;
-  const postGeo = new THREE.BoxGeometry(0.3, postH, 0.3);
-  const posts = [
-    [-2.4, 0.5 + postH / 2, -2.4], [2.4, 0.5 + postH / 2, -2.4],
-    [-2.4, 0.5 + postH / 2, 2.4],  [2.4, 0.5 + postH / 2, 2.4],
-  ];
-  posts.forEach(([x, y, z]) => {
-    const post = new THREE.Mesh(postGeo, postMat);
-    post.position.set(x, y, z);
-    post.castShadow = true;
-    group.add(post);
-  });
+  // Y-axis bed carrier (bed slides forward/back on this platform)
+  const carrierMat = new THREE.MeshStandardMaterial({ color: panelColor, roughness: 0.6, metalness: 0.3 });
+  const carrier = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.12, 4.3), carrierMat);
+  carrier.position.set(0, 0.66, 0);
+  carrier.receiveShadow = true;
+  group.add(carrier);
 
-  const topY = 0.5 + postH;
-  const topGeoX = new THREE.BoxGeometry(5.1, 0.3, 0.3);
-  const topGeoZ = new THREE.BoxGeometry(0.3, 0.3, 5.1);
-  [[0, topY, -2.4, 'x'], [0, topY, 2.4, 'x'], [-2.4, topY, 0, 'z'], [2.4, topY, 0, 'z']].forEach(([x, y, z, axis]) => {
-    const m = new THREE.Mesh(axis === 'x' ? topGeoX : topGeoZ, postMat);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    group.add(m);
-  });
-
-  // Heated bed (slightly raised over base)
-  const bedMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.6, metalness: 0.3 });
-  const bed = new THREE.Mesh(new THREE.BoxGeometry(4, 0.18, 4), bedMat);
-  bed.position.y = 0.78;
-  bed.receiveShadow = true;
+  // Heated bed
+  const bedMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.55, metalness: 0.4 });
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.10, 4.0), bedMat);
+  bed.position.set(0, 0.77, 0);
   bed.castShadow = true;
+  bed.receiveShadow = true;
   group.add(bed);
-  // Build surface (PEI / textured)
-  const peiMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.4, metalness: 0.6 });
+  // PEI textured surface
+  const peiMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.85, metalness: 0.2 });
   const pei = new THREE.Mesh(new THREE.BoxGeometry(3.95, 0.04, 3.95), peiMat);
-  pei.position.y = 0.89;
+  pei.position.set(0, 0.84, 0);
   pei.receiveShadow = true;
   group.add(pei);
+  // Bed handle clip on the front edge (recognizable Ender detail)
+  const clipMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.5 });
+  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.15), clipMat);
+  clip.position.set(0, 0.84, 1.95);
+  group.add(clip);
 
-  // X-gantry rail
-  const railMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.8 });
-  const rail = new THREE.Mesh(new THREE.BoxGeometry(5, 0.18, 0.4), railMat);
-  rail.position.set(0, 4.6, 0);
-  rail.castShadow = true;
-  group.add(rail);
-  // Second rail (parallel)
-  const rail2 = new THREE.Mesh(new THREE.BoxGeometry(5, 0.18, 0.18), railMat);
-  rail2.position.set(0, 4.85, 0);
-  rail2.castShadow = true;
-  group.add(rail2);
+  // Frame — posts and top crossbar
+  const postMat = new THREE.MeshStandardMaterial({ color: frameColor, roughness: 0.45, metalness: 0.5 });
+  const postH = 4.5;  // shorter than before, less empty space at top
+  const postGeo = new THREE.BoxGeometry(0.28, postH, 0.28);
 
-  // Print head assembly
-  const headGroup = new THREE.Group();
-  const headMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.5, metalness: 0.4 });
-  const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.85, 0.95), headMat);
-  headBox.castShadow = true;
-  headGroup.add(headBox);
-  // Hot end — silver block under head
-  const hotMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.9 });
-  const hot = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 0.4), hotMat);
-  hot.position.y = -0.55;
-  hot.castShadow = true;
-  headGroup.add(hot);
-  // Nozzle — brass cone
-  const nozzleMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.3, metalness: 0.9 });
-  const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.10, 0.22, 16), nozzleMat);
-  nozzle.rotation.x = Math.PI;
-  nozzle.position.y = -0.78;
-  headGroup.add(nozzle);
-  // Cooling fan duct
-  const fanMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.6 });
-  const fan = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.25, 0.4), fanMat);
-  fan.position.set(0, -0.15, 0.45);
-  fan.castShadow = true;
-  headGroup.add(fan);
-  headGroup.position.set(0, 4.65, 0);
-  group.add(headGroup);
-
-  // Filament spool on side
-  const spoolMat = new THREE.MeshStandardMaterial({ color: 0xfb923c, roughness: 0.7 });
-  const spool = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.18, 12, 28), spoolMat);
-  spool.rotation.y = Math.PI / 2;
-  spool.position.set(-2.7, 5.3, 1.6);
-  spool.castShadow = true;
-  group.add(spool);
-  // Spool hub
-  const hubMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.5, metalness: 0.5 });
-  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.5, 16), hubMat);
-  hub.rotation.z = Math.PI / 2;
-  hub.position.set(-2.7, 5.3, 1.6);
-  group.add(hub);
-
-  // LCD screen on the front bottom
-  const lcdMat = new THREE.MeshStandardMaterial({ color: 0x0c4a6e, emissive: 0x22d3ee, emissiveIntensity: 0.6, roughness: 0.2 });
-  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.55, 0.06), lcdMat);
-  lcd.position.set(0, 0.7, 2.78);
-  group.add(lcd);
-
-  // Brand badge
-  const badgeMat = new THREE.MeshStandardMaterial({ color: accentColor, emissive: accentColor, emissiveIntensity: 0.2 });
-  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.04), badgeMat);
-  badge.position.set(-1.2, 0.7, 2.78);
-  group.add(badge);
-
-  // Translucent enclosure walls
-  if (printer.enclosed) {
-    const THREE = window.THREE;
-    const wallMat = new THREE.MeshPhysicalMaterial({
-      color: 0xc7e5ff,
-      transparent: true,
-      opacity: 0.18,
-      roughness: 0.0,
-      metalness: 0.0,
-      transmission: 0.85,
-      thickness: 0.02,
-      side: THREE.DoubleSide,
+  let postPositions;
+  if (isCantilever) {
+    // 2 back posts only, more substantial (40×40 extrusion look)
+    postPositions = [[-2.0, postH/2 + 0.6, -1.85], [2.0, postH/2 + 0.6, -1.85]];
+    const backPostGeo = new THREE.BoxGeometry(0.4, postH, 0.4);
+    postPositions.forEach(([x, y, z]) => {
+      const post = new THREE.Mesh(backPostGeo, postMat);
+      post.position.set(x, y, z);
+      post.castShadow = true;
+      group.add(post);
     });
-    const sideGeo = new THREE.PlaneGeometry(4.7, postH);
-    const front = new THREE.Mesh(sideGeo, wallMat); front.position.set(0, 0.5 + postH/2, 2.4); group.add(front);
-    const back = new THREE.Mesh(sideGeo, wallMat); back.position.set(0, 0.5 + postH/2, -2.4); back.rotation.y = Math.PI; group.add(back);
-    const left = new THREE.Mesh(sideGeo, wallMat); left.position.set(-2.4, 0.5 + postH/2, 0); left.rotation.y = Math.PI/2; group.add(left);
-    const right = new THREE.Mesh(sideGeo, wallMat); right.position.set(2.4, 0.5 + postH/2, 0); right.rotation.y = -Math.PI/2; group.add(right);
-    // Roof
-    const topPanel = new THREE.Mesh(new THREE.PlaneGeometry(4.7, 4.7), wallMat);
-    topPanel.position.set(0, 0.5 + postH, 0);
-    topPanel.rotation.x = Math.PI/2;
-    group.add(topPanel);
+    // Top crossbar between back posts
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.28, 0.28), postMat);
+    cross.position.set(0, postH + 0.6, -1.85);
+    cross.castShadow = true;
+    group.add(cross);
+  } else {
+    // 4 corner posts (cube / CoreXY)
+    postPositions = [
+      [-2.3, postH/2 + 0.6, -1.95], [2.3, postH/2 + 0.6, -1.95],
+      [-2.3, postH/2 + 0.6, 1.95],  [2.3, postH/2 + 0.6, 1.95],
+    ];
+    postPositions.forEach(([x, y, z]) => {
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.set(x, y, z);
+      post.castShadow = true;
+      group.add(post);
+    });
+    // Top frame
+    const topY = postH + 0.6;
+    const tx = new THREE.BoxGeometry(4.7, 0.28, 0.28);
+    const tz = new THREE.BoxGeometry(0.28, 0.28, 4.18);
+    [[0, topY, -1.95, 'x'], [0, topY, 1.95, 'x'], [-2.3, topY, 0, 'z'], [2.3, topY, 0, 'z']].forEach(([x, y, z, axis]) => {
+      const m = new THREE.Mesh(axis === 'x' ? tx : tz, postMat);
+      m.position.set(x, y, z);
+      m.castShadow = true;
+      group.add(m);
+    });
   }
 
+  // ---- Z-Carriage: gantry rail + print head (moves UP as model grows) ----
+  const zCarriage = new THREE.Group();
+
+  // Gantry rail (horizontal, X-axis)
+  const railMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.25, metalness: 0.85 });
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.16, 0.35), railMat);
+  rail.position.set(0, 0, isCantilever ? -1.55 : 0);
+  rail.castShadow = true;
+  zCarriage.add(rail);
+  // Second guide rod (parallel, smaller)
+  const rail2 = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.4, 12), railMat);
+  rail2.rotation.z = Math.PI / 2;
+  rail2.position.set(0, -0.3, isCantilever ? -1.55 : 0);
+  rail2.castShadow = true;
+  zCarriage.add(rail2);
+
+  // Print head (rides the rail in X)
+  const headGroup = new THREE.Group();
+  const headMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.45, metalness: 0.4 });
+  const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.85, 0.85), headMat);
+  headBox.position.set(0, -0.15, 0);
+  headBox.castShadow = true;
+  headGroup.add(headBox);
+  // Hot end — silver block beneath the head
+  const hotMat = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.3, metalness: 0.9 });
+  const hot = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.32, 0.36), hotMat);
+  hot.position.set(0, -0.7, 0);
+  hot.castShadow = true;
+  headGroup.add(hot);
+  // Brass nozzle — pointing down
+  const nozMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.3, metalness: 0.9 });
+  const noz = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.18, 16), nozMat);
+  noz.rotation.x = Math.PI;
+  noz.position.set(0, -0.95, 0);
+  headGroup.add(noz);
+  // Cooling fan duct (in front)
+  const fanMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.6 });
+  const fan = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.25, 0.35), fanMat);
+  fan.position.set(0, -0.4, 0.4);
+  fan.castShadow = true;
+  headGroup.add(fan);
+  // For cantilever: head sits on the front of the rail
+  if (isCantilever) headGroup.position.z = -1.0;
+  zCarriage.add(headGroup);
+
+  // Position the carriage in the printer's coordinate space
+  const bedY = 0.86;  // top of PEI surface
+  const carriageMinY = bedY + 0.95;  // resting position (just above the bed)
+  const carriageMaxY = postH + 0.4;   // ceiling
+  zCarriage.position.set(0, carriageMinY, 0);
+  group.add(zCarriage);
+
+  // ---- Filament spool — large and visible on top of frame ----
+  const spoolMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.7 });
+  const spool = new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.22, 12, 32), spoolMat);
+  spool.rotation.y = Math.PI / 2;
+  const spoolY = postH + 1.1;
+  const spoolZ = isCantilever ? -1.85 : 0;
+  spool.position.set(0, spoolY, spoolZ);
+  spool.castShadow = true;
+  group.add(spool);
+  // Spool hub axis
+  const axisMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.4, metalness: 0.7 });
+  const axis = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.7, 16), axisMat);
+  axis.rotation.z = Math.PI / 2;
+  axis.position.set(0, spoolY, spoolZ);
+  group.add(axis);
+  // Spool support arm
+  const armMat = postMat;
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), armMat);
+  arm.position.set(0, spoolY - 0.3, spoolZ);
+  group.add(arm);
+
+  // ---- LCD on the electronics base, front face ----
+  const lcdMat = new THREE.MeshStandardMaterial({
+    color: 0x064e3b, emissive: 0x22d3ee, emissiveIntensity: 0.55, roughness: 0.2
+  });
+  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 0.06), lcdMat);
+  lcd.position.set(0.7, 0.45, 2.13);
+  group.add(lcd);
+  // Knob next to LCD
+  const knobMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.7 });
+  const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.08, 24), knobMat);
+  knob.rotation.x = Math.PI / 2;
+  knob.position.set(1.7, 0.45, 2.13);
+  group.add(knob);
+  // Brand badge on the base
+  const badgeMat = new THREE.MeshStandardMaterial({
+    color: accentColor, emissive: accentColor, emissiveIntensity: 0.25, roughness: 0.3
+  });
+  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.16, 0.03), badgeMat);
+  badge.position.set(-1.6, 0.45, 2.13);
+  group.add(badge);
+
+  // ---- Translucent enclosure walls (cube/CoreXY only) ----
+  if (printer.enclosed && !isCantilever) {
+    const wallMat = new THREE.MeshPhysicalMaterial({
+      color: 0xc7e5ff, transparent: true, opacity: 0.16, roughness: 0.0, metalness: 0.0,
+      transmission: 0.85, thickness: 0.02, side: THREE.DoubleSide,
+    });
+    const sideGeoX = new THREE.PlaneGeometry(4.6, postH);
+    const sideGeoZ = new THREE.PlaneGeometry(3.9, postH);
+    const front = new THREE.Mesh(sideGeoX, wallMat); front.position.set(0, postH/2 + 0.6, 1.95); group.add(front);
+    const back = new THREE.Mesh(sideGeoX, wallMat); back.position.set(0, postH/2 + 0.6, -1.95); back.rotation.y = Math.PI; group.add(back);
+    const left = new THREE.Mesh(sideGeoZ, wallMat); left.position.set(-2.3, postH/2 + 0.6, 0); left.rotation.y = Math.PI/2; group.add(left);
+    const right = new THREE.Mesh(sideGeoZ, wallMat); right.position.set(2.3, postH/2 + 0.6, 0); right.rotation.y = -Math.PI/2; group.add(right);
+    const roof = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 3.9), wallMat);
+    roof.position.set(0, postH + 0.6, 0);
+    roof.rotation.x = Math.PI/2;
+    group.add(roof);
+  }
+
+  group.userData.zCarriage = zCarriage;
   group.userData.headGroup = headGroup;
-  group.userData.bedY = 0.91; // top of PEI surface
-  group.userData.bedHalfSize = 1.85; // model placement bounds
+  group.userData.zCarriageMinY = carriageMinY;
+  group.userData.zCarriageMaxY = carriageMaxY;
+  group.userData.bedY = bedY;
+  group.userData.bedHalfSize = 1.85;
+  group.userData.isCantilever = isCantilever;
   return group;
 }
 
@@ -1019,47 +1084,40 @@ function updateModel(info, slot) {
       info.modelMesh.material.dispose();
     }
     const mesh = createModelMesh(slot.job.productId, slot.job.color);
-    // Position at bed origin
     const printer = printerById(slot.printerId);
     const cat = printerCategory(printer);
     if (cat === 'fdm') {
+      // Anchor at top of build plate; will scale upward as job runs
       mesh.position.y = info.group.userData.bedY;
     } else if (cat === 'resin') {
-      // Model hangs below the build plate (resin prints upside down). Anchored to plate.
-      mesh.scale.y = -1; // flip
+      // Model hangs below the build plate (resin prints upside-down)
+      mesh.scale.y = -1;
       mesh.position.y = info.group.userData.plateRestY - 0.06;
-      // Plate moves up, model stays attached
     } else {
-      // Industrial — model hidden inside cabinet, but place at center for completeness
+      // Industrial — model hidden inside cabinet
       mesh.position.y = 0.3;
+      mesh.visible = false;
     }
     info.scene.add(mesh);
 
-    // Clipping plane: hides everything above its constant
-    const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
-    mesh.material.clippingPlanes = [plane];
-    mesh.material.clipShadows = true;
     info.modelMesh = mesh;
     info.modelJobId = slot.job.orderId;
-    info.modelClipPlane = plane;
     info.modelHeight = computeModelHeight(mesh);
     info.modelCategory = cat;
   }
 
   const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
   if (info.modelCategory === 'resin') {
-    // Lift the build plate; model stays attached; clipping reveals from "top of vat" downward
+    // Build plate rises; model attached underneath grows downward
     const plate = info.group.userData.plate;
     const lift = (info.group.userData.plateMaxY - info.group.userData.plateRestY) * progress;
     plate.position.y = info.group.userData.plateRestY + lift;
     info.modelMesh.position.y = info.group.userData.plateRestY - 0.06 + lift;
-    // For resin we don't clip — model is shown growing as plate rises (already visually correct)
-    info.modelMesh.scale.y = -progress; // flipped, scale grows downward
+    info.modelMesh.scale.y = -Math.max(0.01, progress);
   } else if (info.modelCategory === 'fdm') {
-    // Clipping plane reveals model from y=bedY upward
-    const bedY = info.group.userData.bedY;
-    info.modelClipPlane.normal.set(0, -1, 0);
-    info.modelClipPlane.constant = bedY + info.modelHeight * progress;
+    // Model grows from a thin disc up to full height as the print progresses
+    info.modelMesh.scale.y = Math.max(0.02, progress);
+    info.modelMesh.position.y = info.group.userData.bedY;
   }
 }
 
@@ -1070,25 +1128,43 @@ function computeModelHeight(mesh) {
 
 function animateScene(info, slot) {
   const printing = slot.state === 'printing' && slot.job;
-  // Animate print head for FDM
-  if (info.group.userData.headGroup) {
+  const t = Date.now() / 800;
+
+  // FDM — animate Z-carriage rising with model + head wobbling on its rail
+  if (info.group.userData.zCarriage) {
+    const carriage = info.group.userData.zCarriage;
     const head = info.group.userData.headGroup;
-    const t = Date.now() / 800;
+    const isCanti = info.group.userData.isCantilever;
+    const minY = info.group.userData.zCarriageMinY;
+    const maxY = info.group.userData.zCarriageMaxY;
+    const halfSize = info.group.userData.bedHalfSize || 1.7;
+
     if (printing) {
-      head.position.x = Math.sin(t) * 1.4;
-      head.position.z = Math.cos(t * 0.7) * 0.9;
-      // Lower head as model grows
-      const bedY = info.group.userData.bedY;
       const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
-      const modelH = info.modelHeight || 1;
-      head.position.y = 4.65 - 0.0;  // keep at gantry height; could descend with progress
-      // Use head at constant rail position; keep things simple
-      head.position.y = 4.55;
+      const modelH = info.modelHeight || 0.5;
+      // Carriage hovers just above the current top of the model
+      const surfaceY = info.group.userData.bedY + modelH * progress * 0.85;
+      // Carriage Y is the level of the print head's NOZZLE TIP
+      // Nozzle tip is 0.95 below the carriage local origin (head down by 0.15 + 0.7 + 0.1)
+      // We want nozzle tip ~= surfaceY + 0.05 (just touching)
+      const carriageTargetY = surfaceY + 1.0;  // visual offset for the nozzle
+      carriage.position.y = Math.min(Math.max(carriageTargetY, minY), maxY);
+
+      // Head moves along the rail (X-axis)
+      head.position.x = Math.sin(t * 1.3) * (halfSize * 0.9);
+      // For cube printers, head also moves Y (CoreXY); for cantilever, the bed moves Y so head Z stays fixed
+      if (isCanti) {
+        head.position.z = -1.0;
+      } else {
+        head.position.z = Math.sin(t * 0.7) * (halfSize * 0.9);
+      }
     } else {
-      head.position.x = 0; head.position.z = 0; head.position.y = 4.65;
+      carriage.position.y = minY;
+      head.position.x = 0;
+      head.position.z = isCanti ? -1.0 : 0;
     }
   }
-  // Render
+
   info.renderer.render(info.scene, info.camera);
 }
 
