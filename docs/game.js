@@ -29,14 +29,15 @@ const NOZZLE_EFFECTS = {
   0.8: { speed: 2.10, precision: 0.78, reliability: 0.92 },
 };
 
-// Used-printer depreciation: 75% of new at 0 hours, drops with use, floor at 15%.
+// Used-printer depreciation: 75% of new at 0 hours.
+// Two factors: lifetime AGE and current WEAR (since last service).
+// Servicing costs money but preserves resale value.
 function calcSellPrice(slot) {
   const printer = printerById(slot.printerId);
   const basePrice = slot.purchasePrice ?? (printer ? printer.price : 200);
-  const hoursWorn = slot.totalHours || 0;
-  // Linear decay until ~1200 hours, then floor.
-  const dep = Math.min(0.60, hoursWorn * 0.0005);
-  const factor = Math.max(0.15, 0.75 - dep);
+  const ageDep  = Math.min(0.40, (slot.totalHours || 0) * 0.0003); // can't undo age
+  const wearDep = Math.min(0.30, (slot.wearHours  || 0) * 0.0008); // service clears this
+  const factor = Math.max(0.15, 0.75 - ageDep - wearDep);
   return Math.round(basePrice * factor);
 }
 
@@ -179,9 +180,32 @@ function makeSlot(printerId, slotId, purchasePrice = null) {
     nozzleSize: 0.4,
     nozzleHardened: hardened,
     totalHours: 0,
+    wearHours: 0,        // increases with print time, decreases with service
     purchasePrice: price,
   };
 }
+
+// Maintenance: wear-adjusted reliability
+// Stock reliability fades as wearHours rises; service restores it.
+// Cap fall at 50% of base reliability so printers never become useless.
+function effectiveReliability(slot, printer) {
+  const wear = slot.wearHours || 0;
+  const factor = Math.max(0.5, 1 - wear * 0.0008);  // 0 wear=1.0, 625 wear=0.5
+  return printer.baseReliability * factor;
+}
+function wearStatus(slot) {
+  const w = slot.wearHours || 0;
+  if (w < 80)  return { label: 'Good',     pct: w/8,    color: '#22c55e' };
+  if (w < 200) return { label: 'Worn',     pct: 10 + (w-80)*0.4, color: '#fbbf24' };
+  if (w < 400) return { label: 'Servicing recommended', pct: 50 + (w-200)*0.2, color: '#f97316' };
+  return { label: 'Service required', pct: Math.min(95, 90 + (w-400)*0.025), color: '#dc2626' };
+}
+
+const SERVICE_OPTIONS = [
+  { id: 'tune',    label: 'Quick tune-up',     cost: 30,  reduceWear: 60,  desc: 'Bed level, belt tension, lube rails' },
+  { id: 'service', label: 'Full service',      cost: 90,  reduceWear: 200, desc: 'Replace PTFE, clean hot end, recalibrate' },
+  { id: 'rebuild', label: 'Major overhaul',    cost: 220, reduceWear: 9999,desc: 'Restore as-new wear; bearings, belts, PEI sheet' },
+];
 
 function defaultState() {
   return {
@@ -204,6 +228,7 @@ function migrateSlot(slot) {
   if (slot.nozzleSize === undefined) slot.nozzleSize = 0.4;
   if (slot.nozzleHardened === undefined) slot.nozzleHardened = SHIP_WITH_HARDENED.has(slot.printerId);
   if (slot.totalHours === undefined) slot.totalHours = 0;
+  if (slot.wearHours === undefined) slot.wearHours = slot.totalHours || 0;
   if (slot.purchasePrice === undefined) {
     const p = printerById(slot.printerId);
     slot.purchasePrice = p ? p.price : 200;
@@ -419,13 +444,18 @@ function buyMaterial(matId, qty) {
 // =====================================================================
 // printer shop — clean LIST view with brand, model, specs, buy
 // =====================================================================
-function openShop() {
+async function openShop() {
   document.getElementById('shopModal').classList.add('open');
   shopFilter = 'all';
   document.querySelectorAll('#shopFilters button').forEach(b => {
     b.classList.toggle('active', b.dataset.filter === 'all');
   });
   renderShop();
+  // Lazily generate 3D thumbnails (first time only) and re-render to swap icons → thumbs
+  if (window.THREE && shopThumbnails.size === 0) {
+    await generateShopThumbnails();
+    renderShop();
+  }
 }
 
 function closeShop() {
@@ -457,6 +487,136 @@ function buyPrinter(id) {
   toast(`Welcome, ${printer.model}!`, 'success');
   render();
   closeShop();
+}
+
+// =====================================================================
+// SUPPLIES SHOP — filament brands, resin brands, accessories
+// =====================================================================
+const SUPPLIES_CATALOG = [
+  // ---- PLA & PLA+ ----
+  { brand: 'Sunlu',      name: 'PLA',                material: 'pla',          color: 'White',           hex: '#fafafa', costPerKg: 18 },
+  { brand: 'Sunlu',      name: 'PLA',                material: 'pla',          color: 'Yellow',          hex: '#fbbf24', costPerKg: 18 },
+  { brand: 'Hatchbox',   name: 'PLA',                material: 'pla',          color: 'Tomato Red',      hex: '#dc2626', costPerKg: 22 },
+  { brand: 'Hatchbox',   name: 'PLA',                material: 'pla',          color: 'Sky Blue',        hex: '#3b82f6', costPerKg: 22 },
+  { brand: 'Hatchbox',   name: 'PLA',                material: 'pla',          color: 'Forest Green',    hex: '#16a34a', costPerKg: 22 },
+  { brand: 'Bambu Lab',  name: 'PLA Basic',          material: 'pla',          color: 'Bambu Green',     hex: '#10b981', costPerKg: 25 },
+  { brand: 'Bambu Lab',  name: 'PLA Basic',          material: 'pla',          color: 'Cyan',            hex: '#06b6d4', costPerKg: 25 },
+  { brand: 'Bambu Lab',  name: 'PLA Silk',           material: 'pla',          color: 'Champagne Gold',  hex: '#fbbf24', costPerKg: 32 },
+  { brand: 'Polymaker',  name: 'PolyTerra PLA',      material: 'pla',          color: 'Charcoal Black',  hex: '#1a1a1a', costPerKg: 26 },
+  { brand: 'Polymaker',  name: 'PolyTerra PLA',      material: 'pla',          color: 'Cotton White',    hex: '#fafafa', costPerKg: 26 },
+  { brand: 'Prusament',  name: 'PLA',                material: 'pla',          color: 'Galaxy Black',    hex: '#1a1a2e', costPerKg: 34 },
+  { brand: 'Prusament',  name: 'PLA',                material: 'pla',          color: 'Lipstick Red',    hex: '#b91c1c', costPerKg: 34 },
+  { brand: 'Eryone',     name: 'Silk PLA',           material: 'pla',          color: 'Rainbow',         hex: '#a855f7', costPerKg: 27 },
+  { brand: 'Sunlu',      name: 'PLA+',               material: 'pla-plus',     color: 'Black',           hex: '#111111', costPerKg: 21 },
+  { brand: 'eSun',       name: 'PLA+',               material: 'pla-plus',     color: 'Cool White',      hex: '#fafafa', costPerKg: 24 },
+  // ---- PETG ----
+  { brand: 'Hatchbox',   name: 'PETG',               material: 'petg',         color: 'Translucent',     hex: '#e5e7eb', costPerKg: 25 },
+  { brand: 'Hatchbox',   name: 'PETG',               material: 'petg',         color: 'Blue',            hex: '#1d4ed8', costPerKg: 25 },
+  { brand: 'Bambu Lab',  name: 'PETG Basic',         material: 'petg',         color: 'Light Gray',      hex: '#cbd5e1', costPerKg: 28 },
+  { brand: 'Polymaker',  name: 'PolyLite PETG',      material: 'petg',         color: 'Black',           hex: '#000000', costPerKg: 30 },
+  { brand: 'Prusament',  name: 'PETG',               material: 'petg',         color: 'Anthracite Gray', hex: '#374151', costPerKg: 36 },
+  // ---- TPU ----
+  { brand: 'Sunlu',      name: 'TPU 95A',            material: 'tpu-95a',      color: 'Black',           hex: '#222222', costPerKg: 32 },
+  { brand: 'eSun',       name: 'eTPU 95A',           material: 'tpu-95a',      color: 'Red',             hex: '#ef4444', costPerKg: 38 },
+  { brand: 'NinjaFlex',  name: 'TPU 85A',            material: 'tpu-95a',      color: 'Black',           hex: '#0a0a0a', costPerKg: 75 },
+  // ---- ABS / ASA ----
+  { brand: 'Polymaker',  name: 'PolyLite ABS',       material: 'abs',          color: 'Black',           hex: '#0a0a0a', costPerKg: 22 },
+  { brand: 'eSun',       name: 'ABS+',               material: 'abs',          color: 'Sandstone',       hex: '#d4a017', costPerKg: 24 },
+  { brand: 'Polymaker',  name: 'PolyLite ASA',       material: 'asa',          color: 'Black',           hex: '#000000', costPerKg: 32 },
+  { brand: 'Prusament',  name: 'ASA',                material: 'asa',          color: 'Jet Black',       hex: '#000000', costPerKg: 38 },
+  // ---- Engineering ----
+  { brand: 'Polymaker',  name: 'PolyMax PC',         material: 'pc',           color: 'Black',           hex: '#000000', costPerKg: 50 },
+  { brand: 'Polymaker',  name: 'CoPA Nylon',         material: 'nylon-pa12',   color: 'Natural',         hex: '#e5e0d3', costPerKg: 65 },
+  { brand: 'eSun',       name: 'ePA-CF',             material: 'pa-cf',        color: 'Carbon Black',    hex: '#0a0a0a', costPerKg: 89 },
+  { brand: 'Bambu Lab',  name: 'PA-CF',              material: 'pa-cf',        color: 'Black',           hex: '#000000', costPerKg: 95 },
+  { brand: 'Polymaker',  name: 'PolyMide PA612-CF',  material: 'pa-cf',        color: 'Black',           hex: '#111111', costPerKg: 110 },
+  { brand: 'Essentium',  name: 'PEEK',               material: 'peek',         color: 'Tan',             hex: '#bca987', costPerKg: 400 },
+  // ---- Resins ----
+  { brand: 'Anycubic',   name: 'Standard Resin',     material: 'resin-standard', color: 'Gray',          hex: '#6b7280', costPerLiter: 35 },
+  { brand: 'Phrozen',    name: 'Aqua-Gray 8K',       material: 'resin-standard', color: 'Aqua-Gray',     hex: '#94a3b8', costPerLiter: 42 },
+  { brand: 'Anycubic',   name: 'Tough Resin',        material: 'resin-tough',  color: 'Black',           hex: '#000000', costPerLiter: 80 },
+  { brand: 'Elegoo',     name: 'ABS-Like Tough',     material: 'resin-tough',  color: 'White',           hex: '#fafafa', costPerLiter: 75 },
+  { brand: 'Siraya Tech',name: 'Build',              material: 'resin-tough',  color: 'Black',           hex: '#000000', costPerLiter: 50 },
+  { brand: 'Anycubic',   name: 'Flexible Resin',     material: 'resin-flexible', color: 'Translucent',   hex: '#f3f4f6', costPerLiter: 110 },
+  { brand: 'Phrozen',    name: 'Castable Wax 40%',   material: 'resin-castable',color: 'Purple',         hex: '#a855f7', costPerLiter: 180 },
+  { brand: 'Formlabs',   name: 'Castable Wax 40',    material: 'resin-castable',color: 'Purple',         hex: '#a855f7', costPerLiter: 220 },
+  { brand: 'Formlabs',   name: 'Tough 2000',         material: 'resin-engineering', color: 'Amber',      hex: '#fde68a', costPerLiter: 200 },
+];
+
+let suppliesFilter = 'all';
+
+function openSupplies() {
+  document.getElementById('suppliesModal').classList.add('open');
+  suppliesFilter = 'all';
+  document.querySelectorAll('#suppliesFilters button').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === 'all');
+  });
+  renderSupplies();
+}
+function closeSupplies() {
+  document.getElementById('suppliesModal').classList.remove('open');
+}
+function setSuppliesFilter(f) {
+  suppliesFilter = f;
+  document.querySelectorAll('#suppliesFilters button').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === f);
+  });
+  renderSupplies();
+}
+
+function buyFilament(idx) {
+  const item = SUPPLIES_CATALOG[idx];
+  if (!item) return;
+  const cost = item.costPerKg ?? item.costPerLiter ?? 0;
+  if (state.money < cost) { toast('Not enough cash', 'error'); return; }
+  state.money -= cost;
+  // Stock goes into the underlying material id (color is flavor)
+  state.inventory[item.material] = (state.inventory[item.material] || 0) + 1000;
+  const unit = item.costPerLiter ? 'L' : 'kg';
+  toast(`Bought 1${unit} ${item.brand} ${item.name} (${item.color})`, 'success');
+  render();
+  renderSupplies();
+}
+
+function renderSupplies() {
+  const root = document.getElementById('suppliesList');
+  if (!root) return;
+  let list = SUPPLIES_CATALOG.map((item, i) => ({ ...item, idx: i }));
+  if (suppliesFilter !== 'all') {
+    if (suppliesFilter === 'filament') list = list.filter(i => i.costPerKg);
+    else if (suppliesFilter === 'resin') list = list.filter(i => i.costPerLiter);
+    else list = list.filter(i => i.material === suppliesFilter);
+  }
+  root.innerHTML = '';
+  list.forEach(item => {
+    const cost = item.costPerKg ?? item.costPerLiter ?? 0;
+    const unit = item.costPerLiter ? 'L' : 'kg';
+    const canAfford = state.money >= cost;
+    const mat = materialById(item.material);
+    const matName = mat ? mat.name : item.material;
+    const row = document.createElement('div');
+    row.className = 'supplies-row' + (canAfford ? '' : ' locked');
+    row.innerHTML = `
+      <div class="spool-thumb" style="background:${item.hex}"></div>
+      <div class="supplies-info">
+        <div class="supplies-line1">
+          <span class="brand">${item.brand}</span>
+          <span class="model">${item.name}</span>
+        </div>
+        <div class="supplies-line2">
+          <span class="color-chip" style="background:${item.hex}"></span>
+          <span class="color-name">${item.color}</span>
+          <span class="sep">·</span>
+          <span class="muted">${matName}</span>
+        </div>
+      </div>
+      <div class="supplies-action">
+        <div class="supplies-price">${fmtPrice(cost)}<span class="muted">/${unit}</span></div>
+        <button class="supplies-buy" onclick="window.buyFilament(${item.idx})" ${canAfford ? '' : 'disabled'}>${canAfford ? 'Buy' : 'Short'}</button>
+      </div>
+    `;
+    root.appendChild(row);
+  });
 }
 
 // =====================================================================
@@ -492,6 +652,22 @@ function changeNozzle(nozzleId) {
   slot.nozzleSize = noz.size;
   slot.nozzleHardened = noz.hardened;
   toast(`Installed ${noz.label}`, 'success');
+  renderManage();
+  render();
+}
+
+function performService(slotIdx, serviceId) {
+  const slot = state.printers[slotIdx];
+  if (!slot) return;
+  if (slot.state !== 'idle') { toast('Stop the print first', 'error'); return; }
+  const svc = SERVICE_OPTIONS.find(s => s.id === serviceId);
+  if (!svc) return;
+  if (state.money < svc.cost) { toast(`Need ${fmtPrice(svc.cost)}`, 'error'); return; }
+  if (!confirm(`${svc.label} for ${fmtPrice(svc.cost)}?`)) return;
+  state.money -= svc.cost;
+  const reduce = Math.min(slot.wearHours || 0, svc.reduceWear);
+  slot.wearHours = Math.max(0, (slot.wearHours || 0) - svc.reduceWear);
+  toast(`${svc.label} complete · cleared ${reduce.toFixed(0)}h wear`, 'success');
   renderManage();
   render();
 }
@@ -536,16 +712,41 @@ function renderManage() {
   const isIdle = slot.state === 'idle';
   const isOnly = state.printers.length <= 1;
 
+  // Apply wear to reliability for display
+  const wearAdjustedReliability = effectiveReliability(slot, printer) * nozEff.reliability;
   // Stats
   const statsHtml = `
     <div class="manage-stat-row"><span class="manage-stat-label">Tech</span><span class="manage-stat-value">${printer.tech}</span></div>
     <div class="manage-stat-row"><span class="manage-stat-label">Build volume</span><span class="manage-stat-value">${printer.buildVolumeMM.join(' × ')} mm</span></div>
     <div class="manage-stat-row"><span class="manage-stat-label">Throughput (now)</span><span class="manage-stat-value">${effThroughput.toFixed(0)} g/hr <span class="muted">(${effectiveThroughput(printer)} stock)</span></span></div>
     <div class="manage-stat-row"><span class="manage-stat-label">Precision (now)</span><span class="manage-stat-value">${effPrecision.toFixed(2)} <span class="muted">(${printer.precision.toFixed(2)} stock)</span></span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Reliability (now)</span><span class="manage-stat-value">${(effReliability*100).toFixed(0)}% <span class="muted">(${(printer.baseReliability*100).toFixed(0)}% stock)</span></span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Reliability (now)</span><span class="manage-stat-value">${(wearAdjustedReliability*100).toFixed(0)}% <span class="muted">(${(printer.baseReliability*100).toFixed(0)}% stock, ${(slot.wearHours||0).toFixed(0)}h wear)</span></span></div>
     <div class="manage-stat-row"><span class="manage-stat-label">Multi-material</span><span class="manage-stat-value">${printer.multiMaterialColors > 0 ? `${printer.multiMaterialColors} colors` : 'single'}</span></div>
     <div class="manage-stat-row"><span class="manage-stat-label">Power draw</span><span class="manage-stat-value">${printer.powerW} W</span></div>
     <div class="manage-stat-row"><span class="manage-stat-label">Released</span><span class="manage-stat-value">${printer.released}</span></div>
+  `;
+  // Maintenance section
+  const ws = wearStatus(slot);
+  const serviceCardsHtml = SERVICE_OPTIONS.map(svc => {
+    const canAfford = state.money >= svc.cost;
+    return `
+      <div class="service-card">
+        <div class="service-name">${svc.label}</div>
+        <div class="service-desc">${svc.desc}</div>
+        <div class="service-effect">Clears ${svc.reduceWear === 9999 ? 'ALL' : `${svc.reduceWear}h`} of wear</div>
+        <button class="service-buy" onclick="window.performService(${manageSlotIdx}, '${svc.id}')" ${canAfford && isIdle ? '' : 'disabled'}>${isIdle ? `${fmtPrice(svc.cost)}` : 'Busy'}</button>
+      </div>
+    `;
+  }).join('');
+  const maintenanceHtml = `
+    <div class="wear-bar-wrap">
+      <div class="wear-bar-label">
+        <span>Wear: <strong style="color: ${ws.color}">${ws.label}</strong></span>
+        <span class="muted">${(slot.wearHours||0).toFixed(1)}h since last service</span>
+      </div>
+      <div class="wear-bar"><div class="wear-bar-fill" style="width: ${ws.pct}%; background: ${ws.color}"></div></div>
+    </div>
+    <div class="service-grid">${serviceCardsHtml}</div>
   `;
 
   // Nozzle picker
@@ -574,6 +775,10 @@ function renderManage() {
       ${statsHtml}
     </div>
     <div class="manage-section">
+      <h3>Maintenance</h3>
+      ${maintenanceHtml}
+    </div>
+    <div class="manage-section">
       <h3>Nozzle <span class="muted">— current: ${slot.nozzleSize}mm ${slot.nozzleHardened ? 'hardened' : 'brass'}</span></h3>
       <div class="nozzle-grid">${nozzleHtml}</div>
     </div>
@@ -587,7 +792,7 @@ function renderManage() {
             ${slot.totalHours.toFixed(1)} hrs used <span class="sep">·</span>
             ${((sellAmt/slot.purchasePrice)*100).toFixed(0)}% of new
           </div>
-          <div class="sell-meta muted">Starts at 75% of new, drops with hours used (floor 15%)</div>
+          <div class="sell-meta muted">Starts at 75% of new, drops with lifetime hours (floor 15%)</div>
         </div>
         <button class="sell-button" onclick="window.sellPrinter()" ${(isIdle && !isOnly) ? '' : 'disabled'}>${
           isOnly ? "Can't sell only printer" :
@@ -600,6 +805,70 @@ function renderManage() {
 }
 
 const ICON_FOR_CAT = { fdm: '⚙', resin: '✦', industrial: '▣' };
+
+// Cache of generated 3D thumbnails per printer id (data URLs)
+const shopThumbnails = new Map();
+let thumbnailGenerationInFlight = false;
+
+async function generateShopThumbnails() {
+  if (!window.THREE) return;
+  if (thumbnailGenerationInFlight) return;
+  thumbnailGenerationInFlight = true;
+  const canvas = document.createElement('canvas');
+  const W = 320, H = 240;
+  canvas.width = W * 2;
+  canvas.height = H * 2;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(2);
+  renderer.setSize(W, H, false);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  for (const printer of printersCat) {
+    if (shopThumbnails.has(printer.id)) continue;
+    const scene = new THREE.Scene();
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.55));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(8, 14, 8);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(512, 512);
+    sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 30;
+    sun.shadow.camera.left = -10; sun.shadow.camera.right = 10;
+    sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10;
+    scene.add(sun);
+    const fill = new THREE.DirectionalLight(0xa8d0ff, 0.4);
+    fill.position.set(-6, 5, -8);
+    scene.add(fill);
+    const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
+    camera.position.set(7.5, 5.0, 8.5);
+    camera.lookAt(0, 2.0, 0);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0xe8eaef, roughness: 0.9 }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const cat = printerCategory(printer);
+    let group;
+    if (cat === 'fdm') group = buildFDM3D(printer);
+    else if (cat === 'resin') group = buildResin3D(printer);
+    else group = buildIndustrial3D(printer);
+    scene.add(group);
+
+    renderer.render(scene, camera);
+    shopThumbnails.set(printer.id, canvas.toDataURL('image/png'));
+
+    // Dispose this scene's resources
+    scene.traverse(obj => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+        else obj.material.dispose();
+      }
+    });
+  }
+  renderer.dispose();
+  thumbnailGenerationInFlight = false;
+}
 
 function renderShop() {
   const root = document.getElementById('shopList');
@@ -624,8 +893,12 @@ function renderShop() {
       !repOK ? `<button class="shop-buy" disabled>Need ${repNeeded} rep</button>` :
       !moneyOK ? `<button class="shop-buy" disabled>${fmtPrice(printer.price - state.money)} short</button>` :
       `<button class="shop-buy affordable" onclick="window.buyPrinter('${printer.id}')">Buy</button>`;
+    const thumb = shopThumbnails.get(printer.id);
+    const previewHtml = thumb
+      ? `<img class="shop-thumb" src="${thumb}" alt="${printer.brand} ${printer.model}">`
+      : `<div class="shop-icon ${cat}">${ICON_FOR_CAT[cat]}</div>`;
     row.innerHTML = `
-      <div class="shop-icon ${cat}">${ICON_FOR_CAT[cat]}</div>
+      ${previewHtml}
       <div class="shop-row-info">
         <div class="shop-row-line1">
           <span class="brand">${printer.brand}</span>
@@ -660,6 +933,7 @@ function tick() {
     if (slot.state === 'printing' && slot.job) {
       slot.job.hoursElapsed += gameHours;
       slot.totalHours = (slot.totalHours || 0) + gameHours;
+      slot.wearHours = (slot.wearHours || 0) + gameHours;
       if (slot.job.hoursElapsed >= slot.job.hoursTotal) completeJob(slot);
     }
   }
@@ -1004,71 +1278,50 @@ function buildFDM3D(printer) {
   rail2.castShadow = true;
   zCarriage.add(rail2);
 
-  // ---- DETAILED PRINT HEAD ----
+  // ---- COMPACT PRINT HEAD (single integrated body) ----
   const headGroup = new THREE.Group();
-  // Carriage block (mounts to the rail)
-  const carriageMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5, metalness: 0.5 });
-  const carriageBlock = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 0.55), carriageMat);
-  carriageBlock.position.set(0, 0.05, 0);
+  // Carriage rail mount block (sits ON the rail)
+  const carriageMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5, metalness: 0.6 });
+  const carriageBlock = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.32, 0.55), carriageMat);
+  carriageBlock.position.set(0, 0.18, 0);
   carriageBlock.castShadow = true;
   headGroup.add(carriageBlock);
-  // Main extruder body (accent-colored)
+  // Main head body — accent-colored shroud
   const headMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.45, metalness: 0.4 });
-  const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.75), headMat);
-  headBox.position.set(0, -0.2, 0);
-  headBox.castShadow = true;
-  headGroup.add(headBox);
-  // Direct-drive extruder motor on top of the head (NEMA17, smaller scale)
-  const exStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.55);
-  exStepper.rotation.x = -Math.PI / 2;  // shaft points down into the extruder
-  exStepper.position.set(0, 0.45, 0);
-  headGroup.add(exStepper);
-  // Hot end — heatsink (silver fins)
-  const heatsinkMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.25, metalness: 0.95 });
-  for (let i = 0; i < 4; i++) {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 0.36), heatsinkMat);
-    fin.position.set(0, -0.55 - i * 0.06, 0);
+  const headBody = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.65, 0.7), headMat);
+  headBody.position.set(0, -0.18, 0);
+  headBody.castShadow = true;
+  headGroup.add(headBody);
+  // Heatsink — small finned aluminum stack BELOW the head body
+  const heatsinkMat = new THREE.MeshStandardMaterial({ color: 0xa8a8a8, roughness: 0.25, metalness: 0.95 });
+  for (let i = 0; i < 3; i++) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.04, 0.38), heatsinkMat);
+    fin.position.set(0, -0.58 - i * 0.06, 0);
     headGroup.add(fin);
   }
-  // Heater block (black)
-  const heaterMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.7, metalness: 0.4 });
-  const heater = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.28), heaterMat);
-  heater.position.set(0, -0.85, 0);
+  // Heater block (silver-aluminum)
+  const heaterMat = new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.4, metalness: 0.85 });
+  const heater = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.18, 0.28), heaterMat);
+  heater.position.set(0, -0.82, 0);
   heater.castShadow = true;
   headGroup.add(heater);
   // Brass nozzle — pointing down
   const nozMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.3, metalness: 0.9 });
-  const noz = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.16, 16), nozMat);
+  const noz = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.14, 16), nozMat);
   noz.rotation.x = Math.PI;
-  noz.position.set(0, -1.02, 0);
+  noz.position.set(0, -1.0, 0);
   headGroup.add(noz);
-  // Part-cooling fan (front, larger)
-  const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.55, metalness: 0.3 });
-  const fan1Shell = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.55, 0.18), fanShellMat);
-  fan1Shell.position.set(0, -0.3, 0.4);
-  fan1Shell.castShadow = true;
-  headGroup.add(fan1Shell);
-  // Fan grill (black circle hint)
-  const fanGrillMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.8 });
-  const fanGrill = new THREE.Mesh(new THREE.CircleGeometry(0.2, 16), fanGrillMat);
-  fanGrill.position.set(0, -0.3, 0.5);
+  // Part-cooling fan duct mounted on FRONT of head (compact)
+  const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.55, metalness: 0.3 });
+  const fanShell = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.4, 0.14), fanShellMat);
+  fanShell.position.set(0, -0.18, 0.42);
+  fanShell.castShadow = true;
+  headGroup.add(fanShell);
+  // Fan grill (subtle dark circle)
+  const fanGrillMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+  const fanGrill = new THREE.Mesh(new THREE.CircleGeometry(0.14, 16), fanGrillMat);
+  fanGrill.position.set(0, -0.18, 0.495);
   headGroup.add(fanGrill);
-  // Hot-end side fan (smaller, perpendicular)
-  const fan2 = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.4, 0.4), fanShellMat);
-  fan2.position.set(0.42, -0.05, 0);
-  fan2.castShadow = true;
-  headGroup.add(fan2);
-  // PTFE/Bowden tube going up to the spool area
-  const tubeGeo = new THREE.CylinderGeometry(0.05, 0.05, 1.6, 8);
-  const tube = new THREE.Mesh(tubeGeo, tubeMat);
-  tube.position.set(0, 1.1, 0);
-  tube.rotation.x = Math.PI / 14;
-  headGroup.add(tube);
-  // Cable bundle (black wires curving up)
-  const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.0, 6), wireMat);
-  cable.position.set(-0.35, 0.6, 0.0);
-  cable.rotation.x = Math.PI / 12;
-  headGroup.add(cable);
   // For cantilever: head sits on the front of the rail
   if (isCantilever) headGroup.position.z = -1.0;
   zCarriage.add(headGroup);
@@ -1080,26 +1333,54 @@ function buildFDM3D(printer) {
   zCarriage.position.set(0, carriageMinY, 0);
   group.add(zCarriage);
 
-  // ---- Filament spool — large and visible on top of frame ----
-  const spoolMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.7 });
-  const spool = new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.22, 12, 32), spoolMat);
-  spool.rotation.y = Math.PI / 2;
-  const spoolY = postH + 1.1;
+  // ---- REALISTIC FILAMENT SPOOL (two flanges + wound filament + hub) ----
+  const spoolY = postH + 1.0;
   const spoolZ = isCantilever ? -1.85 : 0;
-  spool.position.set(0, spoolY, spoolZ);
-  spool.castShadow = true;
-  group.add(spool);
-  // Spool hub axis
-  const axisMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.4, metalness: 0.7 });
-  const axis = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.7, 16), axisMat);
-  axis.rotation.z = Math.PI / 2;
-  axis.position.set(0, spoolY, spoolZ);
-  group.add(axis);
-  // Spool support arm
+  const spoolGroup = new THREE.Group();
+  // Two side flanges (cardboard / black plastic look)
+  const flangeMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.8, metalness: 0.0 });
+  const flangeGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.04, 32);
+  const flangeL = new THREE.Mesh(flangeGeo, flangeMat);
+  flangeL.position.x = -0.32;
+  flangeL.rotation.z = Math.PI / 2;
+  flangeL.castShadow = true;
+  spoolGroup.add(flangeL);
+  const flangeR = new THREE.Mesh(flangeGeo, flangeMat);
+  flangeR.position.x = 0.32;
+  flangeR.rotation.z = Math.PI / 2;
+  flangeR.castShadow = true;
+  spoolGroup.add(flangeR);
+  // Wound filament (orange) between the flanges
+  const filMat = new THREE.MeshStandardMaterial({ color: 0xfb923c, roughness: 0.6, metalness: 0.05 });
+  const filGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.6, 32);
+  const fil = new THREE.Mesh(filGeo, filMat);
+  fil.rotation.z = Math.PI / 2;
+  fil.castShadow = true;
+  spoolGroup.add(fil);
+  // Layered winding rings on the side flange (visible filament rings)
+  for (let i = 0; i < 5; i++) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.3 + i * 0.05, 0.012, 6, 24), filMat);
+    ring.rotation.y = Math.PI / 2;
+    ring.position.x = -0.305;
+    spoolGroup.add(ring);
+  }
+  // Cardboard tube core through center
+  const coreMat = new THREE.MeshStandardMaterial({ color: 0x6b5a3b, roughness: 0.85 });
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.66, 24), coreMat);
+  core.rotation.z = Math.PI / 2;
+  spoolGroup.add(core);
+  // Spool holder rod through hub
+  const rodMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.85 });
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.0, 16), rodMat);
+  rod.rotation.z = Math.PI / 2;
+  spoolGroup.add(rod);
+  spoolGroup.position.set(0, spoolY, spoolZ);
+  group.add(spoolGroup);
+  // Support arm bracket (L-shape) connecting spool to frame
   const armMat = postMat;
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), armMat);
-  arm.position.set(0, spoolY - 0.3, spoolZ);
-  group.add(arm);
+  const armV = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), armMat);
+  armV.position.set(0, spoolY - 0.5, spoolZ);
+  group.add(armV);
 
   // ---- LCD on the electronics base, front face ----
   const lcdMat = new THREE.MeshStandardMaterial({
@@ -1936,6 +2217,11 @@ window.openManage = openManage;
 window.closeManage = closeManage;
 window.changeNozzle = changeNozzle;
 window.sellPrinter = sellPrinter;
+window.performService = performService;
+window.openSupplies = openSupplies;
+window.closeSupplies = closeSupplies;
+window.setSuppliesFilter = setSuppliesFilter;
+window.buyFilament = buyFilament;
 
 async function waitForThree() {
   if (window.THREE) return;

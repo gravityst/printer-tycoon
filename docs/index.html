@@ -198,6 +198,113 @@
   }
   .modal-header .subtitle .brand { color: #6b7280; font-weight: 500; }
 
+  /* ---- Maintenance UI inside Manage modal ---- */
+  .wear-bar-wrap { margin-bottom: 14px; }
+  .wear-bar-label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; margin-bottom: 4px;
+  }
+  .wear-bar-label .muted { color: #888; font-weight: 500; }
+  .wear-bar {
+    height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden;
+  }
+  .wear-bar-fill { height: 100%; transition: width 0.3s, background 0.3s; }
+
+  .service-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+  }
+  .service-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 12px;
+    background: #fff;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .service-name { font-weight: 700; font-size: 13px; }
+  .service-desc { font-size: 11px; color: #6b7280; }
+  .service-effect { font-size: 11px; color: #047857; font-weight: 600; }
+  .service-buy {
+    margin-top: 6px;
+    padding: 6px 12px; font-size: 11px; font-weight: 700;
+    background: #1a1a1a; color: #fff; border: none; border-radius: 6px;
+    cursor: pointer; font-family: inherit; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .service-buy:hover:not(:disabled) { background: #4ade80; color: #052e16; }
+  .service-buy:disabled { background: #e5e7eb; color: #9ca3af; cursor: not-allowed; }
+
+  /* ---- Supplies modal ---- */
+  .supplies-list {
+    flex: 1; overflow-y: auto;
+    padding: 16px 24px 24px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .supplies-row {
+    background: #fff;
+    border: 1px solid #e5e7eb; border-radius: 10px;
+    padding: 12px 16px;
+    display: grid;
+    grid-template-columns: 56px 1fr auto;
+    align-items: center; gap: 14px;
+  }
+  .supplies-row.locked { opacity: 0.55; }
+  .supplies-row:hover { border-color: #4ade80; }
+  .spool-thumb {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    border: 8px solid #18181b;
+    box-shadow: inset 0 0 0 14px rgba(0,0,0,0.15);
+    flex-shrink: 0;
+  }
+  .supplies-info { min-width: 0; overflow: hidden; }
+  .supplies-line1 {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  }
+  .supplies-line1 .brand {
+    font-size: 11px; font-weight: 700; color: #6b7280;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .supplies-line1 .model {
+    font-size: 15px; font-weight: 800; color: #111;
+  }
+  .supplies-line2 {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: #4b5563; margin-top: 4px;
+  }
+  .supplies-line2 .color-chip {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 1px solid rgba(0,0,0,0.15);
+  }
+  .supplies-line2 .color-name { font-weight: 600; color: #111; }
+  .supplies-line2 .sep { color: #d1d5db; }
+  .supplies-line2 .muted { color: #9ca3af; }
+  .supplies-action {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    flex-shrink: 0; min-width: 100px;
+  }
+  .supplies-price {
+    font-size: 16px; font-weight: 800; color: #111;
+  }
+  .supplies-price .muted { color: #6b7280; font-weight: 500; font-size: 12px; }
+  .supplies-buy {
+    padding: 6px 16px; font-size: 11px; font-weight: 700;
+    background: #4ade80; color: #052e16; border: none; border-radius: 6px;
+    cursor: pointer; font-family: inherit; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .supplies-buy:hover:not(:disabled) { background: #22c55e; }
+  .supplies-buy:disabled { background: #e5e7eb; color: #9ca3af; cursor: not-allowed; }
+
+  .inv-supplies-btn {
+    margin-top: 6px;
+    width: 100%;
+    padding: 10px;
+    background: #4ade80; color: #052e16; border: none; border-radius: 8px;
+    font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;
+    cursor: pointer; font-family: inherit;
+  }
+  .inv-supplies-btn:hover { background: #22c55e; }
+
   /* ---- Order card ---- */
   .order-card {
     border: 1px solid #e5e7eb; border-radius: 10px;
@@ -348,6 +455,15 @@
   .shop-icon.fdm { background: linear-gradient(135deg, #4b5563, #1f2937); }
   .shop-icon.resin { background: linear-gradient(135deg, #a855f7, #6d28d9); }
   .shop-icon.industrial { background: linear-gradient(135deg, #475569, #0f172a); }
+  .shop-thumb {
+    width: 96px; height: 72px;
+    border-radius: 8px;
+    background: linear-gradient(180deg, #e0e7ff, #d1d5db);
+    object-fit: cover;
+    flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px #d1d5db;
+  }
+  .shop-row { grid-template-columns: 96px 1fr auto !important; }
 
   .shop-row-info { min-width: 0; overflow: hidden; }
   .shop-row-line1 {
@@ -442,10 +558,37 @@
     <div id="orders"></div>
   </section>
   <section>
-    <h2>Filament &amp; Resin</h2>
+    <h2>
+      Filament &amp; Resin
+      <button class="shop-btn" onclick="window.openSupplies()">+ Supplies</button>
+    </h2>
     <div id="inventory"></div>
   </section>
 </main>
+
+<div class="modal" id="suppliesModal">
+  <div class="modal-overlay" onclick="window.closeSupplies()"></div>
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h2>Supplies</h2>
+        <div class="subtitle">Filament + resin from real brands · 1 kg/L per purchase</div>
+      </div>
+      <button class="close" onclick="window.closeSupplies()">×</button>
+    </div>
+    <div class="shop-filters" id="suppliesFilters">
+      <button class="active" data-filter="all" onclick="window.setSuppliesFilter('all')">All</button>
+      <button data-filter="filament" onclick="window.setSuppliesFilter('filament')">Filament</button>
+      <button data-filter="resin" onclick="window.setSuppliesFilter('resin')">Resin</button>
+      <button data-filter="pla" onclick="window.setSuppliesFilter('pla')">PLA</button>
+      <button data-filter="petg" onclick="window.setSuppliesFilter('petg')">PETG</button>
+      <button data-filter="abs" onclick="window.setSuppliesFilter('abs')">ABS</button>
+      <button data-filter="tpu-95a" onclick="window.setSuppliesFilter('tpu-95a')">TPU</button>
+      <button data-filter="pa-cf" onclick="window.setSuppliesFilter('pa-cf')">PA-CF</button>
+    </div>
+    <div class="supplies-list" id="suppliesList"></div>
+  </div>
+</div>
 
 <div class="modal" id="manageModal">
   <div class="modal-overlay" onclick="window.closeManage()"></div>
