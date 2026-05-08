@@ -1,8 +1,8 @@
 // =====================================================================
-// Printer Tycoon — game logic + canvas-rendered printer visuals + shop.
+// Printer Tycoon — Three.js 3D printers + game logic + list-view shop.
 // =====================================================================
 
-const STATE_KEY = 'printer-tycoon-state-v2';
+const STATE_KEY = 'printer-tycoon-state-v3';
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
 const ORDER_SPAWN_BASE_HOURS = 5;
@@ -74,6 +74,24 @@ const FIXED_COLORS = {
   'biocompatible-device': '#fafafa',
 };
 
+// Brand colors used in 3D printer geometry
+const BRAND_COLORS = {
+  'Bambu Lab':       { frame: 0x1a1a1a, accent: 0x4ade80, panel: 0xfafafa },
+  'Prusa Research':  { frame: 0xff7a00, accent: 0x222222, panel: 0x222222 },
+  'Voron Design':    { frame: 0x0066ff, accent: 0x111111, panel: 0x111111 },
+  'Creality':        { frame: 0x1a1a1a, accent: 0xff0000, panel: 0x222222 },
+  'BCN3D':           { frame: 0x14b8a6, accent: 0x1f2937, panel: 0x1f2937 },
+  'Markforged':      { frame: 0x1a1a1a, accent: 0xfbbf24, panel: 0x1f2937 },
+  'Anycubic':        { frame: 0x111827, accent: 0xfbbf24, panel: 0x1f2937 },
+  'Elegoo':          { frame: 0x1f2937, accent: 0xa855f7, panel: 0x111827 },
+  'Sovol':           { frame: 0x6d28d9, accent: 0xfafafa, panel: 0x111827 },
+  'QIDI Tech':       { frame: 0x1e293b, accent: 0xfbbf24, panel: 0x111827 },
+  'Phrozen':         { frame: 0x1f2937, accent: 0xec4899, panel: 0x111827 },
+  'Formlabs':        { frame: 0xfafafa, accent: 0xff6f00, panel: 0x222222 },
+  'HP':              { frame: 0x1a1a1a, accent: 0x0096d6, panel: 0x1f2937 },
+  'EOS':             { frame: 0x222222, accent: 0xfbbf24, panel: 0x111827 },
+};
+
 let printersCat = [];
 let materialsCat = [];
 let productsCat = [];
@@ -82,7 +100,9 @@ let speed = 1;
 let lastTickReal = Date.now();
 let shopFilter = 'all';
 
-// ---------- catalog loaders ----------
+// =====================================================================
+// catalog + state
+// =====================================================================
 async function loadCatalogs() {
   const [pr, mt, pd] = await Promise.all([
     fetch('data/printers.json').then(r => r.json()),
@@ -98,7 +118,6 @@ const printerById = id => printersCat.find(p => p.id === id);
 const materialById = id => materialsCat.find(m => m.id === id);
 const productById = id => productsCat.find(p => p.id === id);
 
-// ---------- state ----------
 function defaultState() {
   return {
     money: STARTING_MONEY,
@@ -130,6 +149,9 @@ function saveState() { localStorage.setItem(STATE_KEY, JSON.stringify(state)); }
 
 function resetState() {
   if (!confirm('Reset all progress?')) return;
+  // Dispose all 3D scenes
+  for (const info of printerScenes.values()) info.renderer.dispose();
+  printerScenes.clear();
   state = defaultState();
   saveState();
   document.getElementById('printers').innerHTML = '';
@@ -137,7 +159,9 @@ function resetState() {
   toast('Game reset.', 'success');
 }
 
-// ---------- helpers ----------
+// =====================================================================
+// helpers
+// =====================================================================
 function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
 
 function pickWeighted(items) {
@@ -165,16 +189,27 @@ function fmtPrice(n) {
   return `$${n.toLocaleString('en-US')}`;
 }
 
-function effectiveThroughput(p) {
-  return p.throughputGPH || p.throughputCM3PH || 30;
-}
+function effectiveThroughput(p) { return p.throughputGPH || p.throughputCM3PH || 30; }
 
 function colorForJob(productId) {
   if (FIXED_COLORS[productId]) return FIXED_COLORS[productId];
   return MODEL_PALETTE[Math.floor(Math.random() * MODEL_PALETTE.length)];
 }
 
-// ---------- order spawning ----------
+function hexToInt(hex) {
+  return parseInt(hex.replace('#', ''), 16);
+}
+
+function printerCategory(printer) {
+  const tech = printer.tech;
+  if (tech === 'FDM' || tech === 'FFF' || tech === 'ADAM') return 'fdm';
+  if (tech === 'MSLA' || tech === 'SLA') return 'resin';
+  return 'industrial';
+}
+
+// =====================================================================
+// game loop: spawn / assign / complete
+// =====================================================================
 function spawnOrder() {
   const eligible = productsCat.filter(p => p.unlockReputation <= state.reputation);
   if (eligible.length === 0) return;
@@ -201,7 +236,6 @@ function spawnOrder() {
   });
 }
 
-// ---------- compatibility ----------
 function canAssign(order, slot) {
   const printer = printerById(slot.printerId);
   if (!printer) return { ok: false, reason: 'no printer' };
@@ -229,7 +263,6 @@ function canAssign(order, slot) {
   return { ok: true, materialId: matId };
 }
 
-// ---------- jobs ----------
 function assignOrder(orderId, slotIdx) {
   const order = state.orders.find(o => o.id === orderId);
   const slot = state.printers[slotIdx];
@@ -276,7 +309,6 @@ function rejectOrder(orderId) {
   render();
 }
 
-// ---------- materials shop ----------
 function buyMaterial(matId, qty) {
   const m = materialById(matId);
   if (!m) return;
@@ -289,10 +321,15 @@ function buyMaterial(matId, qty) {
   render();
 }
 
-// ---------- printer shop ----------
+// =====================================================================
+// printer shop — clean LIST view with brand, model, specs, buy
+// =====================================================================
 function openShop() {
   document.getElementById('shopModal').classList.add('open');
   shopFilter = 'all';
+  document.querySelectorAll('#shopFilters button').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === 'all');
+  });
   renderShop();
 }
 
@@ -332,9 +369,11 @@ function buyPrinter(id) {
   closeShop();
 }
 
+const ICON_FOR_CAT = { fdm: '⚙', resin: '✦', industrial: '▣' };
+
 function renderShop() {
-  const grid = document.getElementById('shopGrid');
-  grid.innerHTML = '';
+  const root = document.getElementById('shopList');
+  root.innerHTML = '';
   let list = printersCat.slice();
   if (shopFilter !== 'all') list = list.filter(p => p.tier === shopFilter);
   list.sort((a, b) => a.price - b.price);
@@ -342,34 +381,42 @@ function renderShop() {
     const repNeeded = TIER_UNLOCK_REP[printer.tier] || 0;
     const repOK = state.reputation >= repNeeded;
     const moneyOK = state.money >= printer.price;
-    const card = document.createElement('div');
-    card.className = 'shop-card' + (repOK && moneyOK ? '' : ' locked');
-    card.innerHTML = `
-      <canvas class="shop-canvas" data-printer-id="${printer.id}" width="320" height="180"></canvas>
-      <div class="shop-card-body">
-        <div class="shop-brand">${printer.brand}</div>
-        <div class="shop-model">${printer.model}</div>
-        <div class="shop-tier"><span class="printer-tier ${printer.tier}">${printer.tier}</span> · ${printer.tech}</div>
-        <div class="shop-specs">
-          ${printer.buildVolumeMM.join('×')}mm · ${effectiveThroughput(printer)} g/hr · ${(printer.baseReliability*100).toFixed(0)}% reliable
+    const cat = printerCategory(printer);
+    const row = document.createElement('div');
+    row.className = 'shop-row' + (repOK && moneyOK ? '' : ' locked');
+    const matsBrief = (printer.materials || []).slice(0, 5).map(m => {
+      const mat = materialById(m);
+      return `<span class="mat-pill">${mat ? mat.name : m}</span>`;
+    }).join('');
+    const moreCount = printer.materials.length > 5 ? `<span class="mat-pill">+${printer.materials.length-5}</span>` : '';
+    const specs = `${printer.tech} <span class="sep">·</span> ${printer.buildVolumeMM.join('×')}mm <span class="sep">·</span> ${effectiveThroughput(printer)} g/hr <span class="sep">·</span> ${(printer.baseReliability*100).toFixed(0)}% reliable`;
+    const buttonContent =
+      !repOK ? `<button class="shop-buy" disabled>Need ${repNeeded} rep</button>` :
+      !moneyOK ? `<button class="shop-buy" disabled>${fmtPrice(printer.price - state.money)} short</button>` :
+      `<button class="shop-buy affordable" onclick="window.buyPrinter('${printer.id}')">Buy</button>`;
+    row.innerHTML = `
+      <div class="shop-icon ${cat}">${ICON_FOR_CAT[cat]}</div>
+      <div class="shop-row-info">
+        <div class="shop-row-line1">
+          <span class="brand">${printer.brand}</span>
+          <span class="model">${printer.model}</span>
+          <span class="printer-tier ${printer.tier}">${printer.tier}</span>
         </div>
-        <div class="shop-mats">${(printer.materials || []).slice(0, 6).map(m => {
-          const mat = materialById(m);
-          return `<span class="mat-pill">${mat ? mat.name : m}</span>`;
-        }).join('')}${printer.materials.length > 6 ? `<span class="mat-pill">+${printer.materials.length-6}</span>` : ''}</div>
-        <div class="shop-card-foot">
-          <div class="shop-price">${fmtPrice(printer.price)}</div>
-          ${!repOK ? `<button class="shop-buy" disabled>Need ${repNeeded} rep</button>` :
-             !moneyOK ? `<button class="shop-buy" disabled>${fmtPrice(printer.price - state.money)} short</button>` :
-             `<button class="shop-buy" onclick="buyPrinter('${printer.id}')">Buy</button>`}
-        </div>
+        <div class="shop-row-line2">${specs}</div>
+        <div class="shop-row-line3">${matsBrief}${moreCount}</div>
+      </div>
+      <div class="shop-row-action">
+        <div class="shop-price">${fmtPrice(printer.price)}</div>
+        ${buttonContent}
       </div>
     `;
-    grid.appendChild(card);
+    root.appendChild(row);
   });
 }
 
-// ---------- main tick ----------
+// =====================================================================
+// main tick
+// =====================================================================
 function tick() {
   const now = Date.now();
   const realDelta = (now - lastTickReal) / 1000;
@@ -404,456 +451,645 @@ function tick() {
 }
 
 // =====================================================================
-// CANVAS RENDERING — printers + growing models
+// 3D rendering with Three.js
 // =====================================================================
 
-// Read the canvas's CSS-determined display size (clientWidth/Height) and
-// match the bitmap to it × devicePixelRatio. Returns drawing dims in CSS pixels.
-function setupCanvas(canvas) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (w === 0 || h === 0) return null;
-  const targetW = Math.round(w * dpr);
-  const targetH = Math.round(h * dpr);
-  if (canvas.width !== targetW || canvas.height !== targetH) {
-    canvas.width = targetW;
-    canvas.height = targetH;
-  }
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { ctx, w, h };
+const printerScenes = new Map(); // canvas → scene info
+
+function createScene(canvas, printer) {
+  const THREE = window.THREE;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.localClippingEnabled = true;
+
+  const scene = new THREE.Scene();
+
+  // Sky-ish gradient via fog + clear
+  scene.background = null;
+
+  // Lighting — warm fill + cool key
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.55));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+  sun.position.set(8, 14, 8);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.camera.near = 0.5;
+  sun.shadow.camera.far = 40;
+  sun.shadow.camera.left = -10;
+  sun.shadow.camera.right = 10;
+  sun.shadow.camera.top = 10;
+  sun.shadow.camera.bottom = -10;
+  scene.add(sun);
+
+  const fill = new THREE.DirectionalLight(0xa8d0ff, 0.4);
+  fill.position.set(-6, 5, -8);
+  scene.add(fill);
+
+  // Camera at 3/4 view
+  const aspect = canvas.clientWidth / canvas.clientHeight;
+  const camera = new THREE.PerspectiveCamera(30, aspect, 0.1, 100);
+  camera.position.set(11, 7.5, 11);
+  camera.lookAt(0, 2.8, 0);
+
+  // Floor / workshop ground
+  const floorGeo = new THREE.PlaneGeometry(40, 40);
+  const floorMat = new THREE.MeshStandardMaterial({
+    color: 0xe8eaef, roughness: 0.9, metalness: 0.0,
+  });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  // Build the printer
+  const cat = printerCategory(printer);
+  let group;
+  if (cat === 'fdm') group = buildFDM3D(printer);
+  else if (cat === 'resin') group = buildResin3D(printer);
+  else group = buildIndustrial3D(printer);
+  scene.add(group);
+
+  return {
+    renderer, scene, camera, group,
+    printerId: printer.id,
+    modelMesh: null,
+    modelJobId: null,
+    modelClipPlane: null,
+  };
 }
 
-function drawPrinter(canvas, slot) {
+function ensureScene(canvas, slot) {
+  if (!window.THREE) return null;
   const printer = printerById(slot.printerId);
-  if (!printer) return;
-  const setup = setupCanvas(canvas);
-  if (!setup) return;
-  const { ctx, w, h } = setup;
-
-  // Background workshop floor
-  ctx.fillStyle = '#f3f4f6';
-  ctx.fillRect(0, 0, w, h);
-  // Floor shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.07)';
-  ctx.fillRect(20, h - 14, w - 40, 10);
-
-  const tech = printer.tech;
-  if (tech === 'FDM' || tech === 'FFF' || tech === 'ADAM') {
-    drawFDMPrinter(ctx, w, h, printer, slot);
-  } else if (tech === 'MSLA' || tech === 'SLA') {
-    drawResinPrinter(ctx, w, h, printer, slot);
-  } else {
-    drawIndustrialPrinter(ctx, w, h, printer, slot);
+  if (!printer) return null;
+  let info = printerScenes.get(canvas);
+  if (info && info.printerId !== printer.id) {
+    info.renderer.dispose();
+    info = null;
+    printerScenes.delete(canvas);
   }
+  if (!info) {
+    info = createScene(canvas, printer);
+    printerScenes.set(canvas, info);
+  }
+  // Resize if canvas dims changed
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (w > 0 && h > 0 && (info.renderer.domElement.width !== w * info.renderer.getPixelRatio() || info.renderer.domElement.height !== h * info.renderer.getPixelRatio())) {
+    info.renderer.setSize(w, h, false);
+    info.camera.aspect = w / h;
+    info.camera.updateProjectionMatrix();
+  }
+  return info;
 }
 
-function drawFDMPrinter(ctx, w, h, printer, slot) {
-  const margin = 28;
-  const x = margin, y = 22, fw = w - margin*2, fh = h - margin - 18;
-  const printing = slot.state === 'printing' && slot.job;
+// ---------------------------------------------------------------------
+// FDM / FFF (Cartesian or CoreXY)
+// ---------------------------------------------------------------------
+function buildFDM3D(printer) {
+  const THREE = window.THREE;
+  const group = new THREE.Group();
+  const colors = BRAND_COLORS[printer.brand] || { frame: 0x444444, accent: 0x222222, panel: 0x222222 };
+  const frameColor = colors.frame;
+  const accentColor = colors.accent;
+  const panelColor = colors.panel;
 
-  // Frame uprights
-  ctx.fillStyle = '#374151';
-  ctx.fillRect(x - 3, y, 6, fh);
-  ctx.fillRect(x + fw - 3, y, 6, fh);
-  // Top crossbar
-  ctx.fillRect(x - 3, y, fw + 6, 5);
-  // Base
-  ctx.fillStyle = '#1f2937';
-  ctx.fillRect(x - 8, y + fh - 6, fw + 16, 10);
+  // Base plate
+  const baseMat = new THREE.MeshStandardMaterial({ color: panelColor, roughness: 0.5, metalness: 0.4 });
+  const base = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.5, 5.5), baseMat);
+  base.position.y = 0.25;
+  base.castShadow = true;
+  base.receiveShadow = true;
+  group.add(base);
 
-  // X-gantry (horizontal rail head rides on)
-  const gantryY = y + 10;
-  ctx.fillStyle = '#6b7280';
-  ctx.fillRect(x + 4, gantryY, fw - 8, 5);
-  // Gantry highlight
-  ctx.fillStyle = '#9ca3af';
-  ctx.fillRect(x + 4, gantryY, fw - 8, 1);
+  // Frame: 4 vertical posts + top frame
+  const postMat = new THREE.MeshStandardMaterial({ color: frameColor, roughness: 0.5, metalness: 0.4 });
+  const postH = 5.0;
+  const postGeo = new THREE.BoxGeometry(0.3, postH, 0.3);
+  const posts = [
+    [-2.4, 0.5 + postH / 2, -2.4], [2.4, 0.5 + postH / 2, -2.4],
+    [-2.4, 0.5 + postH / 2, 2.4],  [2.4, 0.5 + postH / 2, 2.4],
+  ];
+  posts.forEach(([x, y, z]) => {
+    const post = new THREE.Mesh(postGeo, postMat);
+    post.position.set(x, y, z);
+    post.castShadow = true;
+    group.add(post);
+  });
 
-  // Build plate
-  const bedY = y + fh - 16;
-  ctx.fillStyle = '#9ca3af';
-  ctx.fillRect(x + 12, bedY, fw - 24, 10);
-  ctx.fillStyle = '#374151'; // PEI surface
-  ctx.fillRect(x + 12, bedY, fw - 24, 3);
+  const topY = 0.5 + postH;
+  const topGeoX = new THREE.BoxGeometry(5.1, 0.3, 0.3);
+  const topGeoZ = new THREE.BoxGeometry(0.3, 0.3, 5.1);
+  [[0, topY, -2.4, 'x'], [0, topY, 2.4, 'x'], [-2.4, topY, 0, 'z'], [2.4, topY, 0, 'z']].forEach(([x, y, z, axis]) => {
+    const m = new THREE.Mesh(axis === 'x' ? topGeoX : topGeoZ, postMat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    group.add(m);
+  });
 
-  // Model area bounds
-  const modelX = x + 18;
-  const modelY = y + 18;
-  const modelW = fw - 36;
-  const modelH = bedY - modelY;
+  // Heated bed (slightly raised over base)
+  const bedMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.6, metalness: 0.3 });
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(4, 0.18, 4), bedMat);
+  bed.position.y = 0.78;
+  bed.receiveShadow = true;
+  bed.castShadow = true;
+  group.add(bed);
+  // Build surface (PEI / textured)
+  const peiMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.4, metalness: 0.6 });
+  const pei = new THREE.Mesh(new THREE.BoxGeometry(3.95, 0.04, 3.95), peiMat);
+  pei.position.y = 0.89;
+  pei.receiveShadow = true;
+  group.add(pei);
 
-  // Print head position
-  let headX = x + fw / 2;
-  let headBottomY = bedY - 4;
+  // X-gantry rail
+  const railMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.8 });
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(5, 0.18, 0.4), railMat);
+  rail.position.set(0, 4.6, 0);
+  rail.castShadow = true;
+  group.add(rail);
+  // Second rail (parallel)
+  const rail2 = new THREE.Mesh(new THREE.BoxGeometry(5, 0.18, 0.18), railMat);
+  rail2.position.set(0, 4.85, 0);
+  rail2.castShadow = true;
+  group.add(rail2);
 
-  if (printing) {
-    const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
-    const shape = SHAPE_FOR_PRODUCT[slot.job.productId] || 'box';
+  // Print head assembly
+  const headGroup = new THREE.Group();
+  const headMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.5, metalness: 0.4 });
+  const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.85, 0.95), headMat);
+  headBox.castShadow = true;
+  headGroup.add(headBox);
+  // Hot end — silver block under head
+  const hotMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.9 });
+  const hot = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 0.4), hotMat);
+  hot.position.y = -0.55;
+  hot.castShadow = true;
+  headGroup.add(hot);
+  // Nozzle — brass cone
+  const nozzleMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.3, metalness: 0.9 });
+  const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.10, 0.22, 16), nozzleMat);
+  nozzle.rotation.x = Math.PI;
+  nozzle.position.y = -0.78;
+  headGroup.add(nozzle);
+  // Cooling fan duct
+  const fanMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.6 });
+  const fan = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.25, 0.4), fanMat);
+  fan.position.set(0, -0.15, 0.45);
+  fan.castShadow = true;
+  headGroup.add(fan);
+  headGroup.position.set(0, 4.65, 0);
+  group.add(headGroup);
 
-    // Head wobble — varies by tech (CoreXY moves in 2D, Cartesian 1D)
-    const t = Date.now() / 350;
-    const wobble = Math.sin(t) * (modelW * 0.32);
-    headX = modelX + modelW / 2 + wobble;
+  // Filament spool on side
+  const spoolMat = new THREE.MeshStandardMaterial({ color: 0xfb923c, roughness: 0.7 });
+  const spool = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.18, 12, 28), spoolMat);
+  spool.rotation.y = Math.PI / 2;
+  spool.position.set(-2.7, 5.3, 1.6);
+  spool.castShadow = true;
+  group.add(spool);
+  // Spool hub
+  const hubMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.5, metalness: 0.5 });
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.5, 16), hubMat);
+  hub.rotation.z = Math.PI / 2;
+  hub.position.set(-2.7, 5.3, 1.6);
+  group.add(hub);
 
-    // Visible model height
-    const visibleH = modelH * progress;
-    headBottomY = modelY + (modelH - visibleH) - 2;
+  // LCD screen on the front bottom
+  const lcdMat = new THREE.MeshStandardMaterial({ color: 0x0c4a6e, emissive: 0x22d3ee, emissiveIntensity: 0.6, roughness: 0.2 });
+  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.55, 0.06), lcdMat);
+  lcd.position.set(0, 0.7, 2.78);
+  group.add(lcd);
 
-    drawPrintingModel(ctx, modelX, modelY, modelW, modelH, shape, slot.job.color, progress);
-  } else {
-    // Show a dimmed silhouette of nothing — just keep print bed
-  }
+  // Brand badge
+  const badgeMat = new THREE.MeshStandardMaterial({ color: accentColor, emissive: accentColor, emissiveIntensity: 0.2 });
+  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.04), badgeMat);
+  badge.position.set(-1.2, 0.7, 2.78);
+  group.add(badge);
 
-  // Print head visualization
-  const headColor = printing ? '#dc2626' : '#1f2937';
-  // Carriage on gantry
-  ctx.fillStyle = '#1f2937';
-  ctx.fillRect(headX - 14, gantryY + 5, 28, 8);
-  // Head body
-  ctx.fillStyle = '#111827';
-  ctx.fillRect(headX - 11, gantryY + 13, 22, headBottomY - gantryY - 13);
-  // Hot end
-  ctx.fillStyle = headColor;
-  ctx.beginPath();
-  ctx.moveTo(headX - 5, headBottomY);
-  ctx.lineTo(headX + 5, headBottomY);
-  ctx.lineTo(headX, headBottomY + 5);
-  ctx.closePath();
-  ctx.fill();
-
-  // Tiny molten drop
-  if (printing && Math.random() < 0.25) {
-    ctx.fillStyle = slot.job.color;
-    ctx.beginPath();
-    ctx.arc(headX, headBottomY + 3, 1.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Enclosure overlay
+  // Translucent enclosure walls
   if (printer.enclosed) {
-    const grad = ctx.createLinearGradient(x, y, x, y + fh);
-    grad.addColorStop(0, 'rgba(135, 206, 250, 0.18)');
-    grad.addColorStop(1, 'rgba(135, 206, 250, 0.10)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(x, y, fw, fh);
-    ctx.strokeStyle = 'rgba(50, 100, 130, 0.35)';
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x, y, fw, fh);
+    const THREE = window.THREE;
+    const wallMat = new THREE.MeshPhysicalMaterial({
+      color: 0xc7e5ff,
+      transparent: true,
+      opacity: 0.18,
+      roughness: 0.0,
+      metalness: 0.0,
+      transmission: 0.85,
+      thickness: 0.02,
+      side: THREE.DoubleSide,
+    });
+    const sideGeo = new THREE.PlaneGeometry(4.7, postH);
+    const front = new THREE.Mesh(sideGeo, wallMat); front.position.set(0, 0.5 + postH/2, 2.4); group.add(front);
+    const back = new THREE.Mesh(sideGeo, wallMat); back.position.set(0, 0.5 + postH/2, -2.4); back.rotation.y = Math.PI; group.add(back);
+    const left = new THREE.Mesh(sideGeo, wallMat); left.position.set(-2.4, 0.5 + postH/2, 0); left.rotation.y = Math.PI/2; group.add(left);
+    const right = new THREE.Mesh(sideGeo, wallMat); right.position.set(2.4, 0.5 + postH/2, 0); right.rotation.y = -Math.PI/2; group.add(right);
+    // Roof
+    const topPanel = new THREE.Mesh(new THREE.PlaneGeometry(4.7, 4.7), wallMat);
+    topPanel.position.set(0, 0.5 + postH, 0);
+    topPanel.rotation.x = Math.PI/2;
+    group.add(topPanel);
   }
 
-  // Brand badge on the front
-  ctx.fillStyle = printing ? '#22c55e' : '#94a3b8';
-  ctx.beginPath();
-  ctx.arc(x + 8, y + fh - 22, 3, 0, Math.PI * 2);
-  ctx.fill();
+  group.userData.headGroup = headGroup;
+  group.userData.bedY = 0.91; // top of PEI surface
+  group.userData.bedHalfSize = 1.85; // model placement bounds
+  return group;
 }
 
-function drawResinPrinter(ctx, w, h, printer, slot) {
-  const margin = 32;
-  const x = margin, y = 22, fw = w - margin*2, fh = h - margin - 18;
-  const printing = slot.state === 'printing' && slot.job;
-  const progress = printing ? Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal) : 0;
+// ---------------------------------------------------------------------
+// Resin (MSLA / SLA)
+// ---------------------------------------------------------------------
+function buildResin3D(printer) {
+  const THREE = window.THREE;
+  const group = new THREE.Group();
+  const colors = BRAND_COLORS[printer.brand] || { frame: 0x222222, accent: 0xa855f7, panel: 0x111827 };
 
-  // Outer cabinet
-  ctx.fillStyle = '#1f2937';
-  ctx.fillRect(x, y, fw, fh);
-  ctx.fillStyle = '#374151';
-  ctx.fillRect(x + 5, y + 5, fw - 10, fh - 10);
+  // Cabinet body
+  const cabMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.6, metalness: 0.3 });
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(3.5, 5.5, 3.5), cabMat);
+  cab.position.y = 2.75;
+  cab.castShadow = true;
+  cab.receiveShadow = true;
+  group.add(cab);
+  // Frame trim
+  const trimMat = new THREE.MeshStandardMaterial({ color: colors.frame, roughness: 0.5, metalness: 0.5 });
+  const trimGeo = new THREE.BoxGeometry(3.7, 0.2, 3.7);
+  const trimTop = new THREE.Mesh(trimGeo, trimMat); trimTop.position.y = 5.55; group.add(trimTop);
+  const trimBot = new THREE.Mesh(trimGeo, trimMat); trimBot.position.y = 0.05; group.add(trimBot);
 
-  // Top control panel
-  ctx.fillStyle = '#111827';
-  ctx.fillRect(x + 5, y + 5, fw - 10, 14);
-  // Status LED
-  ctx.fillStyle = printing ? '#22c55e' : '#6b7280';
-  ctx.beginPath();
-  ctx.arc(x + 14, y + 12, 3, 0, Math.PI * 2);
-  ctx.fill();
+  // Vat (translucent purple) at the bottom inside
+  const vatMat = new THREE.MeshPhysicalMaterial({
+    color: 0xa855f7,
+    transparent: true,
+    opacity: 0.55,
+    roughness: 0.05,
+    metalness: 0.0,
+    transmission: 0.6,
+  });
+  const vat = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.0, 2.4), vatMat);
+  vat.position.set(0, 1.3, 0);
+  group.add(vat);
+  const vatRim = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.1, 2.6), trimMat);
+  vatRim.position.y = 1.85;
+  group.add(vatRim);
 
-  // Z-screw (lifts the build plate)
-  ctx.fillStyle = '#fcd34d';
-  ctx.fillRect(x + fw - 14, y + 22, 4, fh - 30);
-  // Z-screw guide bar
-  ctx.fillStyle = '#9ca3af';
-  ctx.fillRect(x + 10, y + 22, 3, fh - 30);
+  // Z-screw on the back interior
+  const zMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.4, metalness: 0.7 });
+  const zScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3.5, 12), zMat);
+  zScrew.position.set(0, 3.2, -1.4);
+  group.add(zScrew);
 
-  // Resin vat at the bottom
-  const vatTopY = y + fh - 36;
-  const vatBotY = y + fh - 8;
-  ctx.fillStyle = 'rgba(168, 85, 247, 0.55)';
-  ctx.fillRect(x + 18, vatTopY, fw - 36, vatBotY - vatTopY);
-  // Vat lip
-  ctx.fillStyle = '#9ca3af';
-  ctx.fillRect(x + 16, vatTopY - 2, fw - 32, 3);
+  // Z-axis guide rails (chrome)
+  const guideMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.2, metalness: 0.9 });
+  const guideGeo = new THREE.CylinderGeometry(0.05, 0.05, 3.5, 12);
+  [-0.4, 0.4].forEach(x => {
+    const g = new THREE.Mesh(guideGeo, guideMat);
+    g.position.set(x, 3.2, -1.4);
+    group.add(g);
+  });
 
-  // Build plate (starts touching vat bottom, lifts as print grows)
-  const plateMaxLift = (vatTopY - 4) - (y + 24);
-  const plateY = (vatBotY - 6) - plateMaxLift * progress;
-  ctx.fillStyle = '#cbd5e1';
-  ctx.fillRect(x + 22, plateY, fw - 44, 4);
-  // Plate stem up to z-screw
-  ctx.fillStyle = '#6b7280';
-  ctx.fillRect(x + fw - 22, y + 22, 4, plateY - (y + 22));
+  // Build plate (metal) — moves up as print progresses
+  const plateMat = new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.3, metalness: 0.8 });
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 2.0), plateMat);
+  plate.position.set(0, 1.85, 0); // resting position over vat
+  plate.castShadow = true;
+  group.add(plate);
+  // Plate arm to z-screw
+  const armMat = trimMat;
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.2, 1.4), armMat);
+  arm.position.set(0, 1.95, -0.7);
+  group.add(arm);
 
-  // Model hanging down from plate (resin prints upside down)
-  if (printing) {
-    const shape = SHAPE_FOR_PRODUCT[slot.job.productId] || 'box';
-    const modelTop = plateY + 4;
-    const modelBot = vatBotY - 4;
-    const modelH = Math.max(0, modelBot - modelTop);
-    const modelW = fw - 44;
-    if (modelH > 2) {
-      ctx.save();
-      ctx.translate(x + 22, modelTop);
-      ctx.scale(1, -1);
-      ctx.translate(0, -modelH);
-      drawPrintingModel(ctx, 0, 0, modelW, modelH, shape, slot.job.color, 1);
-      ctx.restore();
-    }
-  }
+  // LED display panel on front
+  const lcdMat = new THREE.MeshStandardMaterial({ color: 0x0c4a6e, emissive: 0x22d3ee, emissiveIntensity: 0.6, roughness: 0.2 });
+  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.9, 0.08), lcdMat);
+  lcd.position.set(0, 4.4, 1.79);
+  group.add(lcd);
+  // Brand badge
+  const badgeMat = new THREE.MeshStandardMaterial({ color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.3 });
+  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.04), badgeMat);
+  badge.position.set(0, 5.2, 1.79);
+  group.add(badge);
 
-  // UV light glow at vat bottom while printing
-  if (printing) {
-    const t = Date.now() / 200;
-    const a = 0.25 + Math.sin(t) * 0.08;
-    ctx.fillStyle = `rgba(99, 102, 241, ${a})`;
-    ctx.fillRect(x + 18, vatBotY - 6, fw - 36, 4);
-  }
+  group.userData.plate = plate;
+  group.userData.plateRestY = 1.85;
+  group.userData.plateMaxY = 4.5;
+  group.userData.bedHalfSize = 1.0;
+  return group;
 }
 
-function drawIndustrialPrinter(ctx, w, h, printer, slot) {
-  const margin = 24;
-  const x = margin, y = 22, fw = w - margin*2, fh = h - margin - 18;
-  const printing = slot.state === 'printing' && slot.job;
+// ---------------------------------------------------------------------
+// Industrial (SLS / MJF / DMLS / ADAM)
+// ---------------------------------------------------------------------
+function buildIndustrial3D(printer) {
+  const THREE = window.THREE;
+  const group = new THREE.Group();
+  const colors = BRAND_COLORS[printer.brand] || { frame: 0x222222, accent: 0xfbbf24, panel: 0x1f2937 };
 
-  // Steel cabinet
-  const grad = ctx.createLinearGradient(x, y, x + fw, y + fh);
-  grad.addColorStop(0, '#475569');
-  grad.addColorStop(1, '#334155');
-  ctx.fillStyle = grad;
-  ctx.fillRect(x, y, fw, fh);
-  ctx.strokeStyle = '#1e293b';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, fw, fh);
+  // Big metal cabinet
+  const cabMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.55, metalness: 0.5 });
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(5, 5.5, 4), cabMat);
+  cab.position.y = 2.75;
+  cab.castShadow = true;
+  cab.receiveShadow = true;
+  group.add(cab);
 
-  // Door panel + handle
-  const doorX = x + 10, doorY = y + 14, doorW = fw - 80, doorH = fh - 28;
-  ctx.fillStyle = '#64748b';
-  ctx.fillRect(doorX, doorY, doorW, doorH);
-  // Viewing window
-  const winX = doorX + 10, winY = doorY + 10, winW = doorW - 20, winH = doorH - 30;
-  ctx.fillStyle = printing ? 'rgba(34, 197, 94, 0.18)' : 'rgba(0,0,0,0.4)';
-  ctx.fillRect(winX, winY, winW, winH);
-  ctx.strokeStyle = '#0f172a';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(winX, winY, winW, winH);
+  // Door panel (lighter color, inset)
+  const doorMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.5, metalness: 0.5 });
+  const door = new THREE.Mesh(new THREE.BoxGeometry(3.2, 4.2, 0.08), doorMat);
+  door.position.set(-0.6, 2.75, 2.05);
+  group.add(door);
+
+  // Window in the door
+  const winMat = new THREE.MeshPhysicalMaterial({
+    color: 0x1e293b,
+    transparent: true,
+    opacity: 0.7,
+    roughness: 0.05,
+    metalness: 0.0,
+    transmission: 0.3,
+  });
+  const win = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.6, 0.04), winMat);
+  win.position.set(-0.6, 3.4, 2.10);
+  group.add(win);
+
   // Door handle
-  ctx.fillStyle = '#cbd5e1';
-  ctx.fillRect(doorX + doorW - 8, doorY + doorH/2 - 8, 4, 16);
+  const handleMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.9 });
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.6, 0.08), handleMat);
+  handle.position.set(0.85, 2.75, 2.10);
+  group.add(handle);
 
-  // Status panel on the right
-  const panelX = x + fw - 60, panelY = y + 14;
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(panelX, panelY, 50, fh - 28);
-  // LED bank
-  const t = Date.now() / 400;
-  const led1 = printing ? (Math.sin(t) > 0 ? '#22c55e' : '#15803d') : '#374151';
-  const led2 = printing ? '#fbbf24' : '#374151';
-  const led3 = '#374151';
-  ctx.fillStyle = led1;
-  ctx.beginPath(); ctx.arc(panelX + 12, panelY + 12, 4, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = led2;
-  ctx.beginPath(); ctx.arc(panelX + 26, panelY + 12, 4, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = led3;
-  ctx.beginPath(); ctx.arc(panelX + 40, panelY + 12, 4, 0, Math.PI*2); ctx.fill();
+  // Right-side control panel (dark with LEDs)
+  const panelMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.5 });
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(1.4, 4.2, 0.08), panelMat);
+  panel.position.set(1.85, 2.75, 2.05);
+  group.add(panel);
 
-  // Mini display
-  ctx.fillStyle = '#0c4a6e';
-  ctx.fillRect(panelX + 6, panelY + 24, 38, 18);
-  if (printing) {
-    const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
-    ctx.fillStyle = '#22d3ee';
-    ctx.font = '700 9px ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`${(progress*100).toFixed(0)}%`, panelX + 25, panelY + 33);
-  } else {
-    ctx.fillStyle = '#0e7490';
-    ctx.font = '700 9px ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('READY', panelX + 25, panelY + 33);
-  }
+  // LCD screen on panel
+  const lcdMat = new THREE.MeshStandardMaterial({ color: 0x065f46, emissive: 0x22d3ee, emissiveIntensity: 0.7 });
+  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.7, 0.04), lcdMat);
+  lcd.position.set(1.85, 3.6, 2.10);
+  group.add(lcd);
 
-  // Bottom progress bar
-  if (printing) {
-    const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
-    const pbY = y + fh - 10;
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(panelX + 6, pbY, 38, 3);
-    ctx.fillStyle = '#22c55e';
-    ctx.fillRect(panelX + 6, pbY, 38 * progress, 3);
-  }
+  // Status LEDs
+  const ledColors = [0x22c55e, 0xfbbf24, 0xef4444];
+  ledColors.forEach((c, i) => {
+    const ledMat = new THREE.MeshStandardMaterial({
+      color: c, emissive: c, emissiveIntensity: 0.7,
+    });
+    const led = new THREE.Mesh(new THREE.SphereGeometry(0.10, 12, 8), ledMat);
+    led.position.set(1.85, 2.7 - i * 0.3, 2.10);
+    group.add(led);
+  });
 
-  // Industrial caster wheels
-  ctx.fillStyle = '#1e293b';
-  ctx.beginPath(); ctx.arc(x + 10, y + fh + 1, 3, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(x + fw - 10, y + fh + 1, 3, 0, Math.PI*2); ctx.fill();
+  // Brand badge near the top
+  const badgeMat = new THREE.MeshStandardMaterial({ color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.4 });
+  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, 0.04), badgeMat);
+  badge.position.set(0, 4.7, 2.05);
+  group.add(badge);
+
+  // Caster wheels at corners of base
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.6 });
+  const wheelGeo = new THREE.SphereGeometry(0.18, 12, 12);
+  [[-2.3, -1.8], [2.3, -1.8], [-2.3, 1.8], [2.3, 1.8]].forEach(([x, z]) => {
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.position.set(x, 0.18, z);
+    w.castShadow = true;
+    group.add(w);
+  });
+
+  // Save references for animation
+  group.userData.lcd = lcd;
+  group.userData.leds = group.children.filter(c => c.material && c.material.emissiveIntensity > 0.5).slice(-3);
+  return group;
 }
 
-// Build a path for a product shape into ctx (caller fills/clips).
-function buildShape(ctx, x, y, w, h, shape) {
-  ctx.beginPath();
+// ---------------------------------------------------------------------
+// Model creation — 3D shape per product
+// ---------------------------------------------------------------------
+function createGearGeo() {
+  const THREE = window.THREE;
+  const teeth = 10, outer = 0.72, inner = 0.55, h = 0.4;
+  const shape = new THREE.Shape();
+  for (let i = 0; i <= teeth * 2; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const a = (i / (teeth * 2)) * Math.PI * 2;
+    const x = Math.cos(a) * r, y = Math.sin(a) * r;
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  }
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, 0.18, 0, Math.PI * 2, true);
+  shape.holes.push(hole);
+  return new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
+}
+
+function createBracketGeo() {
+  const THREE = window.THREE;
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.6, -0.6);
+  shape.lineTo(0.6, -0.6);
+  shape.lineTo(0.6, -0.2);
+  shape.lineTo(-0.2, -0.2);
+  shape.lineTo(-0.2, 0.6);
+  shape.lineTo(-0.6, 0.6);
+  shape.closePath();
+  return new THREE.ExtrudeGeometry(shape, { depth: 0.5, bevelEnabled: false });
+}
+
+function createCrossGeo() {
+  const THREE = window.THREE;
+  const a = new THREE.BoxGeometry(2.0, 0.18, 0.35);
+  const b = new THREE.BoxGeometry(0.35, 0.18, 2.0);
+  // Merge using BufferGeometryUtils-like manual approach: just return primary;
+  // Two-mesh solution will be done in createModelMesh.
+  return a;
+}
+
+function createTallGeo() {
+  const THREE = window.THREE;
+  const points = [];
+  for (let i = 0; i <= 12; i++) {
+    const t = i / 12;
+    const r = 0.35 + Math.sin(t * Math.PI) * 0.30;
+    points.push(new THREE.Vector2(r, t * 1.6));
+  }
+  return new THREE.LatheGeometry(points, 28);
+}
+
+function createAngularGeo() {
+  const THREE = window.THREE;
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.6, -0.6);
+  shape.lineTo(-0.3, 0.5);
+  shape.lineTo(0.0, 0.0);
+  shape.lineTo(0.4, 0.7);
+  shape.lineTo(0.6, -0.6);
+  shape.closePath();
+  return new THREE.ExtrudeGeometry(shape, { depth: 0.5, bevelEnabled: false });
+}
+
+function createBatchGeo() {
+  const THREE = window.THREE;
+  // Single representative box — visual fidelity sacrifice for simplicity
+  return new THREE.BoxGeometry(1.6, 0.4, 1.2);
+}
+
+function createShapeGeometry(shape) {
+  const THREE = window.THREE;
   switch (shape) {
-    case 'flat':
-      ctx.roundRect(x + w*0.18, y + h*0.55, w*0.64, h*0.40, 5);
-      break;
-    case 'flat-wide':
-      ctx.roundRect(x + w*0.08, y + h*0.62, w*0.84, h*0.32, 4);
-      break;
-    case 'tall': {
-      const lx = x + w*0.32, rx = x + w*0.68;
-      ctx.moveTo(lx, y + h*0.95);
-      ctx.lineTo(lx, y + h*0.45);
-      ctx.bezierCurveTo(x + w*0.22, y + h*0.30, x + w*0.36, y + h*0.10, x + w*0.40, y + h*0.05);
-      ctx.lineTo(x + w*0.60, y + h*0.05);
-      ctx.bezierCurveTo(x + w*0.64, y + h*0.10, x + w*0.78, y + h*0.30, rx, y + h*0.45);
-      ctx.lineTo(rx, y + h*0.95);
-      ctx.closePath();
-      break;
-    }
-    case 'humanoid': {
-      const cx = x + w*0.5;
-      ctx.arc(cx, y + h*0.20, h*0.13, 0, Math.PI*2);
-      ctx.moveTo(cx - w*0.15, y + h*0.32);
-      ctx.lineTo(cx + w*0.15, y + h*0.32);
-      ctx.lineTo(cx + w*0.15, y + h*0.65);
-      ctx.lineTo(cx - w*0.15, y + h*0.65);
-      ctx.closePath();
-      ctx.moveTo(cx - w*0.13, y + h*0.65); ctx.lineTo(cx - w*0.04, y + h*0.65);
-      ctx.lineTo(cx - w*0.04, y + h*0.95); ctx.lineTo(cx - w*0.13, y + h*0.95); ctx.closePath();
-      ctx.moveTo(cx + w*0.04, y + h*0.65); ctx.lineTo(cx + w*0.13, y + h*0.65);
-      ctx.lineTo(cx + w*0.13, y + h*0.95); ctx.lineTo(cx + w*0.04, y + h*0.95); ctx.closePath();
-      break;
-    }
-    case 'dome': {
-      const cx = x + w*0.5;
-      ctx.arc(cx, y + h*0.85, w*0.42, Math.PI, 0);
-      ctx.lineTo(x + w*0.92, y + h*0.95);
-      ctx.lineTo(x + w*0.08, y + h*0.95);
-      ctx.closePath();
-      break;
-    }
-    case 'cross': {
-      const cx = x + w*0.5, cy = y + h*0.55, sz = w*0.36, t = h*0.10;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(Math.PI/4);
-      ctx.rect(-sz, -t/2, sz*2, t);
-      ctx.rect(-t/2, -sz, t, sz*2);
-      ctx.restore();
-      break;
-    }
-    case 'gear': {
-      const gcx = x + w*0.5, gcy = y + h*0.55, gr = h*0.32;
-      const teeth = 10;
-      for (let i = 0; i < teeth; i++) {
-        const a = (i / teeth) * Math.PI * 2;
-        const a2 = ((i + 0.5) / teeth) * Math.PI * 2;
-        const r1 = gr, r2 = gr * 1.25;
-        const x1 = gcx + Math.cos(a) * r1, y1 = gcy + Math.sin(a) * r1;
-        const x2 = gcx + Math.cos(a2) * r2, y2 = gcy + Math.sin(a2) * r2;
-        if (i === 0) ctx.moveTo(x1, y1); else ctx.lineTo(x1, y1);
-        ctx.lineTo(x2, y2);
-      }
-      ctx.closePath();
-      break;
-    }
-    case 'bracket':
-      ctx.moveTo(x + w*0.20, y + h*0.20);
-      ctx.lineTo(x + w*0.45, y + h*0.20);
-      ctx.lineTo(x + w*0.45, y + h*0.65);
-      ctx.lineTo(x + w*0.80, y + h*0.65);
-      ctx.lineTo(x + w*0.80, y + h*0.90);
-      ctx.lineTo(x + w*0.20, y + h*0.90);
-      ctx.closePath();
-      break;
-    case 'block':
-      ctx.rect(x + w*0.22, y + h*0.32, w*0.56, h*0.58);
-      break;
-    case 'gem':
-      ctx.moveTo(x + w*0.5, y + h*0.30);
-      ctx.lineTo(x + w*0.70, y + h*0.55);
-      ctx.lineTo(x + w*0.5, y + h*0.78);
-      ctx.lineTo(x + w*0.30, y + h*0.55);
-      ctx.closePath();
-      break;
-    case 'small':
-      ctx.arc(x + w*0.5, y + h*0.65, h*0.22, 0, Math.PI*2);
-      break;
-    case 'box':
-      ctx.rect(x + w*0.27, y + h*0.40, w*0.46, h*0.50);
-      break;
-    case 'angular':
-      ctx.moveTo(x + w*0.18, y + h*0.92);
-      ctx.lineTo(x + w*0.36, y + h*0.32);
-      ctx.lineTo(x + w*0.55, y + h*0.55);
-      ctx.lineTo(x + w*0.74, y + h*0.22);
-      ctx.lineTo(x + w*0.86, y + h*0.92);
-      ctx.closePath();
-      break;
-    case 'batch': {
-      const cols = 4, rows = 3;
-      const px = w / (cols + 1), py = h / (rows + 2);
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const bx = x + (c + 0.7) * px;
-          const by = y + (r + 1.4) * py;
-          ctx.rect(bx, by, px * 0.6, py * 0.55);
-        }
-      }
-      break;
-    }
-    default:
-      ctx.rect(x + w*0.30, y + h*0.45, w*0.40, h*0.50);
+    case 'flat': return new THREE.BoxGeometry(2.0, 0.30, 1.2);
+    case 'flat-wide': return new THREE.BoxGeometry(2.4, 0.22, 1.0);
+    case 'tall': return createTallGeo();
+    case 'humanoid': return new THREE.CapsuleGeometry(0.35, 0.9, 6, 12);
+    case 'dome': return new THREE.SphereGeometry(0.85, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+    case 'cross': return createCrossGeo();
+    case 'gear': return createGearGeo();
+    case 'bracket': return createBracketGeo();
+    case 'block': return new THREE.BoxGeometry(1.0, 1.2, 1.0);
+    case 'gem': return new THREE.OctahedronGeometry(0.6, 0);
+    case 'small': return new THREE.SphereGeometry(0.4, 16, 12);
+    case 'box': return new THREE.BoxGeometry(1.2, 1.0, 1.2);
+    case 'angular': return createAngularGeo();
+    case 'batch': return createBatchGeo();
+    default: return new THREE.BoxGeometry(1.0, 1.0, 1.0);
   }
 }
 
-function drawPrintingModel(ctx, x, y, w, h, shape, color, progress) {
-  if (progress <= 0) return;
-  ctx.save();
-  // Reveal mask: bottom progress fraction
-  const visibleH = h * progress;
-  const visibleY = y + h - visibleH;
-  ctx.beginPath();
-  ctx.rect(x, visibleY, w, visibleH);
-  ctx.clip();
+function createModelMesh(productId, color) {
+  const THREE = window.THREE;
+  const shape = SHAPE_FOR_PRODUCT[productId] || 'box';
+  const geo = createShapeGeometry(shape);
 
-  // Fill silhouette
-  buildShape(ctx, x, y, w, h, shape);
-  ctx.fillStyle = color;
-  ctx.fill();
+  // For shape that's a 2D extrude (gear, bracket, angular), rotate so extrude axis is Y
+  if (shape === 'gear' || shape === 'bracket' || shape === 'angular') {
+    geo.rotateX(-Math.PI / 2);
+  }
+  // Lathe geometry already has Y as up.
 
-  // Subtle gradient highlight on top edge of revealed area
-  const grad = ctx.createLinearGradient(x, visibleY, x, visibleY + Math.min(8, visibleH));
-  grad.addColorStop(0, 'rgba(255,255,255,0.35)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(x, visibleY, w, Math.min(8, visibleH));
+  // Compute bbox and translate so bottom is at y=0
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+  geo.translate(0, -bb.min.y, 0);
 
-  // Layer lines
-  ctx.strokeStyle = 'rgba(0,0,0,0.10)';
-  ctx.lineWidth = 0.5;
-  for (let yy = y + h; yy > visibleY; yy -= 3) {
-    ctx.beginPath();
-    ctx.moveTo(x, yy);
-    ctx.lineTo(x + w, yy);
-    ctx.stroke();
+  const colorInt = hexToInt(color);
+  const mat = new THREE.MeshStandardMaterial({
+    color: colorInt,
+    roughness: 0.65,
+    metalness: 0.1,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+
+  // For 'cross' (drone), add second perpendicular bar
+  if (shape === 'cross') {
+    const bar2Geo = new THREE.BoxGeometry(0.35, 0.18, 2.0);
+    bar2Geo.translate(0, 0.09, 0);
+    const bar2 = new THREE.Mesh(bar2Geo, mat);
+    bar2.castShadow = true;
+    bar2.receiveShadow = true;
+    mesh.add(bar2);
   }
 
-  ctx.restore();
+  return mesh;
+}
+
+function updateModel(info, slot) {
+  const THREE = window.THREE;
+  const printing = slot.state === 'printing' && slot.job;
+
+  if (!printing) {
+    if (info.modelMesh) {
+      info.scene.remove(info.modelMesh);
+      info.modelMesh.geometry.dispose();
+      info.modelMesh.material.dispose();
+      info.modelMesh = null;
+      info.modelJobId = null;
+    }
+    return;
+  }
+
+  if (info.modelJobId !== slot.job.orderId) {
+    if (info.modelMesh) {
+      info.scene.remove(info.modelMesh);
+      info.modelMesh.geometry.dispose();
+      info.modelMesh.material.dispose();
+    }
+    const mesh = createModelMesh(slot.job.productId, slot.job.color);
+    // Position at bed origin
+    const printer = printerById(slot.printerId);
+    const cat = printerCategory(printer);
+    if (cat === 'fdm') {
+      mesh.position.y = info.group.userData.bedY;
+    } else if (cat === 'resin') {
+      // Model hangs below the build plate (resin prints upside down). Anchored to plate.
+      mesh.scale.y = -1; // flip
+      mesh.position.y = info.group.userData.plateRestY - 0.06;
+      // Plate moves up, model stays attached
+    } else {
+      // Industrial — model hidden inside cabinet, but place at center for completeness
+      mesh.position.y = 0.3;
+    }
+    info.scene.add(mesh);
+
+    // Clipping plane: hides everything above its constant
+    const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+    mesh.material.clippingPlanes = [plane];
+    mesh.material.clipShadows = true;
+    info.modelMesh = mesh;
+    info.modelJobId = slot.job.orderId;
+    info.modelClipPlane = plane;
+    info.modelHeight = computeModelHeight(mesh);
+    info.modelCategory = cat;
+  }
+
+  const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
+  if (info.modelCategory === 'resin') {
+    // Lift the build plate; model stays attached; clipping reveals from "top of vat" downward
+    const plate = info.group.userData.plate;
+    const lift = (info.group.userData.plateMaxY - info.group.userData.plateRestY) * progress;
+    plate.position.y = info.group.userData.plateRestY + lift;
+    info.modelMesh.position.y = info.group.userData.plateRestY - 0.06 + lift;
+    // For resin we don't clip — model is shown growing as plate rises (already visually correct)
+    info.modelMesh.scale.y = -progress; // flipped, scale grows downward
+  } else if (info.modelCategory === 'fdm') {
+    // Clipping plane reveals model from y=bedY upward
+    const bedY = info.group.userData.bedY;
+    info.modelClipPlane.normal.set(0, -1, 0);
+    info.modelClipPlane.constant = bedY + info.modelHeight * progress;
+  }
+}
+
+function computeModelHeight(mesh) {
+  const bb = mesh.geometry.boundingBox;
+  return bb ? (bb.max.y - bb.min.y) : 1;
+}
+
+function animateScene(info, slot) {
+  const printing = slot.state === 'printing' && slot.job;
+  // Animate print head for FDM
+  if (info.group.userData.headGroup) {
+    const head = info.group.userData.headGroup;
+    const t = Date.now() / 800;
+    if (printing) {
+      head.position.x = Math.sin(t) * 1.4;
+      head.position.z = Math.cos(t * 0.7) * 0.9;
+      // Lower head as model grows
+      const bedY = info.group.userData.bedY;
+      const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
+      const modelH = info.modelHeight || 1;
+      head.position.y = 4.65 - 0.0;  // keep at gantry height; could descend with progress
+      // Use head at constant rail position; keep things simple
+      head.position.y = 4.55;
+    } else {
+      head.position.x = 0; head.position.z = 0; head.position.y = 4.65;
+    }
+  }
+  // Render
+  info.renderer.render(info.scene, info.camera);
 }
 
 // =====================================================================
@@ -862,11 +1098,12 @@ function drawPrintingModel(ctx, x, y, w, h, shape, color, progress) {
 
 function ensurePrinterCards() {
   const root = document.getElementById('printers');
+  // Track current cards by slotId so reorders / removals are cheap
   while (root.children.length < state.printers.length) {
     const card = document.createElement('div');
     card.className = 'printer-card';
     card.innerHTML = `
-      <canvas class="printer-canvas" width="400" height="220"></canvas>
+      <canvas class="printer-canvas"></canvas>
       <div class="printer-info">
         <div class="printer-name"></div>
         <div class="printer-specs"></div>
@@ -878,7 +1115,11 @@ function ensurePrinterCards() {
     root.appendChild(card);
   }
   while (root.children.length > state.printers.length) {
-    root.removeChild(root.lastChild);
+    const removed = root.lastChild;
+    const canvas = removed.querySelector('canvas');
+    const info = printerScenes.get(canvas);
+    if (info) { info.renderer.dispose(); printerScenes.delete(canvas); }
+    root.removeChild(removed);
   }
 }
 
@@ -1003,27 +1244,24 @@ function render() {
 }
 
 // =====================================================================
-// Animation loop — drives canvases at ~60fps
+// Animation loop — drives 3D scenes at ~60fps
 // =====================================================================
-
 function animate() {
-  // Workshop printer canvases
-  const root = document.getElementById('printers');
-  if (root) {
-    state.printers.forEach((slot, i) => {
-      const card = root.children[i];
-      if (!card) return;
-      const canvas = card.querySelector('.printer-canvas');
-      if (canvas) drawPrinter(canvas, slot);
-    });
-  }
-  // Shop modal canvases (idle preview of each catalog printer)
-  if (document.getElementById('shopModal').classList.contains('open')) {
-    document.querySelectorAll('#shopGrid canvas').forEach(canvas => {
-      const printerId = canvas.dataset.printerId;
-      const printer = printerById(printerId);
-      if (printer) drawPrinter(canvas, { state: 'idle', job: null, printerId });
-    });
+  if (window.THREE && state) {
+    const root = document.getElementById('printers');
+    if (root) {
+      state.printers.forEach((slot, i) => {
+        const card = root.children[i];
+        if (!card) return;
+        const canvas = card.querySelector('.printer-canvas');
+        if (!canvas) return;
+        const info = ensureScene(canvas, slot);
+        if (info) {
+          updateModel(info, slot);
+          animateScene(info, slot);
+        }
+      });
+    }
   }
   requestAnimationFrame(animate);
 }
@@ -1031,7 +1269,6 @@ function animate() {
 // =====================================================================
 // Toast / speed control / boot
 // =====================================================================
-
 let toastTimer = null;
 function toast(msg, kind) {
   const t = document.getElementById('toast');
@@ -1056,8 +1293,18 @@ window.openShop = openShop;
 window.closeShop = closeShop;
 window.setShopFilter = setShopFilter;
 
+async function waitForThree() {
+  if (window.THREE) return;
+  return new Promise(r => {
+    window.addEventListener('threeReady', r, { once: true });
+    // Safety timeout — proceed without 3D after 6s
+    setTimeout(r, 6000);
+  });
+}
+
 async function boot() {
   await loadCatalogs();
+  await waitForThree();
   state = loadState();
   document.getElementById('btnSpeed').addEventListener('click', cycleSpeed);
   document.getElementById('btnReset').addEventListener('click', resetState);
