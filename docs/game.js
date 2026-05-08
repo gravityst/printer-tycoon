@@ -1300,51 +1300,78 @@ function buildFDM3D(printer) {
   xStepper.position.set(-2.4, 0, isCantilever ? -1.55 : 0);
   zCarriage.add(xStepper);
 
-  // ---- COMPACT PRINT HEAD (single integrated body) ----
+  // ---- PRINT HEAD ASSEMBLY (saddle ON rail → mount arm → shroud → nozzle) ----
+  // Visual chain: every part connects so nothing floats in mid-air.
   const headGroup = new THREE.Group();
-  // Carriage rail mount block (sits ON the rail)
   const carriageMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5, metalness: 0.6 });
-  const carriageBlock = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.32, 0.55), carriageMat);
-  carriageBlock.position.set(0, 0.18, 0);
-  carriageBlock.castShadow = true;
-  headGroup.add(carriageBlock);
-  // Main head body — accent-colored shroud
   const headMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.45, metalness: 0.4 });
-  const headBody = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.65, 0.7), headMat);
-  headBody.position.set(0, -0.18, 0);
+  const heatsinkMat = new THREE.MeshStandardMaterial({ color: 0xa8a8a8, roughness: 0.25, metalness: 0.95 });
+  const heaterMat = new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.4, metalness: 0.85 });
+  const nozMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.3, metalness: 0.9 });
+  const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.55, metalness: 0.3 });
+  const fanGrillMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+
+  // For cantilever: rail sits BEHIND (local z=-0.55), head body extends FORWARD over bed center (local z=1.0).
+  // For cube: rail and body are at the same z (=0). headGroup origin always lands on the rail in world space.
+  const railLocZ = isCantilever ? -0.55 : 0;
+  const bodyLocZ = isCantilever ?  1.00 : 0;
+
+  // 1. Saddle — wraps the rail
+  const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.42, 0.50), carriageMat);
+  saddle.position.set(0, 0.05, railLocZ);
+  saddle.castShadow = true;
+  headGroup.add(saddle);
+
+  // 2. Cantilever mount arm — clearly bridges from saddle (at rail) to the shroud (over bed)
+  if (isCantilever) {
+    const armLen = bodyLocZ - railLocZ;  // 1.55 units
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.20, armLen), carriageMat);
+    arm.position.set(0, 0.10, (railLocZ + bodyLocZ) / 2);
+    arm.castShadow = true;
+    headGroup.add(arm);
+    // Arm reinforcement gusset (small block hugging the saddle)
+    const gusset = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.30, 0.30), carriageMat);
+    gusset.position.set(0, -0.05, railLocZ + 0.20);
+    headGroup.add(gusset);
+  }
+
+  // 3. Head shroud (accent-colored)
+  const headBody = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.62, 0.50), headMat);
+  headBody.position.set(0, -0.22, bodyLocZ);
   headBody.castShadow = true;
   headGroup.add(headBody);
-  // Heatsink — small finned aluminum stack BELOW the head body
-  const heatsinkMat = new THREE.MeshStandardMaterial({ color: 0xa8a8a8, roughness: 0.25, metalness: 0.95 });
+
+  // 4. Heatsink fins under the shroud
   for (let i = 0; i < 3; i++) {
     const fin = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.04, 0.38), heatsinkMat);
-    fin.position.set(0, -0.58 - i * 0.06, 0);
+    fin.position.set(0, -0.58 - i * 0.06, bodyLocZ);
     headGroup.add(fin);
   }
-  // Heater block (silver-aluminum)
-  const heaterMat = new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.4, metalness: 0.85 });
+
+  // 5. Heater block
   const heater = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.18, 0.28), heaterMat);
-  heater.position.set(0, -0.82, 0);
+  heater.position.set(0, -0.82, bodyLocZ);
   heater.castShadow = true;
   headGroup.add(heater);
-  // Brass nozzle — pointing down
-  const nozMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.3, metalness: 0.9 });
+
+  // 6. Brass nozzle pointing down
   const noz = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.14, 16), nozMat);
   noz.rotation.x = Math.PI;
-  noz.position.set(0, -1.0, 0);
+  noz.position.set(0, -1.0, bodyLocZ);
   headGroup.add(noz);
-  // Part-cooling fan duct mounted on FRONT of head (compact)
-  const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.55, metalness: 0.3 });
+
+  // 7. Front cooling fan
   const fanShell = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.4, 0.14), fanShellMat);
-  fanShell.position.set(0, -0.18, 0.42);
+  fanShell.position.set(0, -0.22, bodyLocZ + 0.32);
   fanShell.castShadow = true;
   headGroup.add(fanShell);
-  // Fan grill (subtle dark circle)
-  const fanGrillMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
   const fanGrill = new THREE.Mesh(new THREE.CircleGeometry(0.14, 16), fanGrillMat);
-  fanGrill.position.set(0, -0.18, 0.495);
+  fanGrill.position.set(0, -0.22, bodyLocZ + 0.39);
   headGroup.add(fanGrill);
-  // For cantilever: head sits on the front of the rail
+
+  // Position the headGroup so the saddle sits ON the gantry rail.
+  // For cantilever, rail is at zCarriage local z=-1.55, so headGroup local z=-1.0
+  // puts saddle (local z=-0.55) at world z=-1.55. Body lands at world z=0 (bed center).
   if (isCantilever) headGroup.position.z = -1.0;
   zCarriage.add(headGroup);
 
@@ -2010,8 +2037,10 @@ function updateModel(info, slot) {
     info.modelMesh.position.y = info.group.userData.plateRestY - 0.06 + lift;
     info.modelMesh.scale.y = -Math.max(0.01, progress);
   } else if (info.modelCategory === 'fdm') {
-    // Model grows from a thin disc up to full height as the print progresses
-    info.modelMesh.scale.y = Math.max(0.02, progress);
+    // Model grows from ~25% to 100% over the print. We don't go to 0 because
+    // a vase scaled to 0.05 looks like a flat disc — unrecognizable. Starting
+    // at 25% keeps the silhouette readable from the first second.
+    info.modelMesh.scale.y = 0.25 + progress * 0.75;
     info.modelMesh.position.y = info.group.userData.bedY;
   }
 }
