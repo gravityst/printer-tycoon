@@ -315,10 +315,36 @@ function printerCategory(printer) {
 // =====================================================================
 // game loop: spawn / assign / complete
 // =====================================================================
+function productCanRunOnSlot(product, slot) {
+  const printer = printerById(slot.printerId);
+  if (!printer) return false;
+  if (product.tech && !product.tech.includes(printer.tech)) return false;
+  if (!product.materials.some(m => printer.materials.includes(m))) return false;
+  if (product.minPrecision) {
+    const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
+    if (printer.precision * nozEff.precision < product.minPrecision) return false;
+  }
+  if (product.minBuildVolumeMM && printer.buildVolumeMM) {
+    const bv = printer.buildVolumeMM, need = product.minBuildVolumeMM;
+    if (bv[0] < need[0] || bv[1] < need[1] || bv[2] < need[2]) return false;
+  }
+  // At least one material must be both supported AND nozzle-compatible
+  const ok = product.materials.find(m =>
+    printer.materials.includes(m) && nozzleCompatible(slot, m).ok
+  );
+  return !!ok;
+}
+
 function spawnOrder() {
   const eligible = productsCat.filter(p => p.unlockReputation <= state.reputation);
   if (eligible.length === 0) return;
-  const product = pickWeighted(eligible);
+  // Prefer products that can actually be printed by the current workshop.
+  // 85% from compatible pool, 15% aspirational (incentive to upgrade).
+  const compatible = eligible.filter(p =>
+    state.printers.some(slot => productCanRunOnSlot(p, slot))
+  );
+  const pool = (compatible.length > 0 && Math.random() < 0.85) ? compatible : eligible;
+  const product = pickWeighted(pool);
   const grams = rand(product.grams[0], product.grams[1]);
   const baseHours = rand(product.printHours[0], product.printHours[1]);
   const priceMult = 0.85 + Math.random() * 0.45;
@@ -1181,7 +1207,7 @@ function buildFDM3D(printer) {
 
   // Frame — posts and top crossbar
   const postMat = new THREE.MeshStandardMaterial({ color: frameColor, roughness: 0.45, metalness: 0.5 });
-  const postH = 4.5;  // shorter than before, less empty space at top
+  const postH = 3.5;  // tighter proportions, less empty space at top
   const postGeo = new THREE.BoxGeometry(0.28, postH, 0.28);
 
   let postPositions;
@@ -2085,6 +2111,20 @@ function renderPrinters() {
   });
 }
 
+// Boil down a long canAssign reason to ~3 words for tight button labels.
+function shortReason(r) {
+  if (!r) return '';
+  const s = r.toLowerCase();
+  if (s.includes('hardened')) return 'no hardened';
+  if (s.includes('material')) return 'wrong material';
+  if (s.includes('tech')) return 'wrong tech';
+  if (s.includes('volume')) return 'too small';
+  if (s.includes('precision')) return 'low precision';
+  if (s.includes('busy')) return 'busy';
+  if (s.startsWith('need ')) return r;
+  return r;
+}
+
 function renderOrders() {
   const root = document.getElementById('orders');
   if (state.orders.length === 0) {
@@ -2099,22 +2139,47 @@ function renderOrders() {
     const matLabel = mat ? mat.name : order.materialId;
     const urgent = order.deadlineHours < 12;
 
+    const checks = state.printers.map(slot => canAssign(order, slot));
+    const anyOk = checks.some(c => c.ok);
+
     let actions = '';
     state.printers.forEach((slot, i) => {
-      const c = canAssign(order, slot);
+      const c = checks[i];
       const printer = printerById(slot.printerId);
       const label = state.printers.length === 1
         ? (c.ok ? 'Print it' : c.reason)
-        : (c.ok ? `→ ${printer.brand} ${printer.model}` : `${printer.model} ✗`);
+        : (c.ok ? `→ ${printer.model}` : `${printer.model}: ${shortReason(c.reason)}`);
       actions += `<button onclick="window.assignOrder(${order.id}, ${i})" ${c.ok ? '' : 'disabled'} title="${c.reason || ''}">${label}</button>`;
     });
     actions += `<button class="reject" onclick="window.rejectOrder(${order.id})" title="Decline">Decline</button>`;
+
+    // Order-level "why can't I print this?" summary
+    let reasonHtml = '';
+    if (!anyOk) {
+      const nonBusy = checks.filter(c => c.reason !== 'busy');
+      const allBusy = nonBusy.length === 0;
+      let reason;
+      if (allBusy) {
+        reason = 'All printers busy';
+      } else {
+        // Pick the most "actionable" reason — prefer hardened/material/tech hints
+        const priority = ['hardened', 'tech', 'material', 'volume', 'precision', 'need '];
+        let pick = nonBusy[0];
+        for (const p of priority) {
+          const m = nonBusy.find(c => c.reason && c.reason.toLowerCase().includes(p));
+          if (m) { pick = m; break; }
+        }
+        reason = pick.reason;
+      }
+      reasonHtml = `<div class="order-reason">✗ ${reason}</div>`;
+    }
 
     el.innerHTML = `
       <div class="order-name">${order.productName}<span class="order-cat">${order.category}</span></div>
       <div class="order-spec">${matLabel} · ${order.grams.toFixed(0)}g · ~${order.baseHours.toFixed(1)}h${order.batchSize > 1 ? ` · batch of ${order.batchSize}` : ''}</div>
       <div class="order-pay">${fmtMoney(order.basePrice)}</div>
       <div class="order-deadline ${urgent ? 'urgent' : ''}">⏱ ${order.deadlineHours.toFixed(1)}h to deadline</div>
+      ${reasonHtml}
       <div class="order-actions">${actions}</div>
     `;
     root.appendChild(el);
