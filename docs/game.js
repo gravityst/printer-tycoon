@@ -1278,15 +1278,6 @@ function buildFDM3D(printer) {
       group.add(zStepper);
     }
   }
-  // ---- X-AXIS STEPPER MOTOR (on the gantry, at the left end) ----
-  const xStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.8);
-  xStepper.rotation.y = Math.PI / 2;
-  if (isCantilever) {
-    xStepper.position.set(-2.5, postH * 0.7 + 0.6, -1.55);
-  } else {
-    xStepper.position.set(-2.45, postH * 0.7 + 0.6, 0);
-  }
-  group.add(xStepper);
 
   // ---- Z-Carriage: gantry rail + print head (moves UP as model grows) ----
   const zCarriage = new THREE.Group();
@@ -1303,6 +1294,11 @@ function buildFDM3D(printer) {
   rail2.position.set(0, -0.3, isCantilever ? -1.55 : 0);
   rail2.castShadow = true;
   zCarriage.add(rail2);
+  // X-axis stepper motor — attached to the LEFT end of the rail so it travels with the gantry
+  const xStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.7);
+  xStepper.rotation.y = Math.PI / 2;
+  xStepper.position.set(-2.4, 0, isCantilever ? -1.55 : 0);
+  zCarriage.add(xStepper);
 
   // ---- COMPACT PRINT HEAD (single integrated body) ----
   const headGroup = new THREE.Group();
@@ -1428,22 +1424,67 @@ function buildFDM3D(printer) {
   badge.position.set(-1.6, 0.45, 2.13);
   group.add(badge);
 
-  // ---- Translucent enclosure walls (cube/CoreXY only) ----
+  // ---- Solid enclosure shell with glass front door (cube/CoreXY only) ----
   if (printer.enclosed && !isCantilever) {
-    const wallMat = new THREE.MeshPhysicalMaterial({
-      color: 0xc7e5ff, transparent: true, opacity: 0.16, roughness: 0.0, metalness: 0.0,
-      transmission: 0.85, thickness: 0.02, side: THREE.DoubleSide,
+    // Outer panels — brand frame color so each printer reads as its identity
+    const shellMat = new THREE.MeshStandardMaterial({
+      color: frameColor, roughness: 0.45, metalness: 0.35
     });
-    const sideGeoX = new THREE.PlaneGeometry(4.6, postH);
-    const sideGeoZ = new THREE.PlaneGeometry(3.9, postH);
-    const front = new THREE.Mesh(sideGeoX, wallMat); front.position.set(0, postH/2 + 0.6, 1.95); group.add(front);
-    const back = new THREE.Mesh(sideGeoX, wallMat); back.position.set(0, postH/2 + 0.6, -1.95); back.rotation.y = Math.PI; group.add(back);
-    const left = new THREE.Mesh(sideGeoZ, wallMat); left.position.set(-2.3, postH/2 + 0.6, 0); left.rotation.y = Math.PI/2; group.add(left);
-    const right = new THREE.Mesh(sideGeoZ, wallMat); right.position.set(2.3, postH/2 + 0.6, 0); right.rotation.y = -Math.PI/2; group.add(right);
-    const roof = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 3.9), wallMat);
-    roof.position.set(0, postH + 0.6, 0);
-    roof.rotation.x = Math.PI/2;
-    group.add(roof);
+    const wallY = postH/2 + 0.6;
+    const wallH = postH - 0.1;
+    // Back wall
+    const back = new THREE.Mesh(new THREE.BoxGeometry(4.5, wallH, 0.06), shellMat);
+    back.position.set(0, wallY, -1.93);
+    back.castShadow = true;
+    back.receiveShadow = true;
+    group.add(back);
+    // Left + right walls
+    const sideGeo = new THREE.BoxGeometry(0.06, wallH, 3.78);
+    const leftW = new THREE.Mesh(sideGeo, shellMat);
+    leftW.position.set(-2.27, wallY, 0);
+    leftW.castShadow = true;
+    leftW.receiveShadow = true;
+    group.add(leftW);
+    const rightW = new THREE.Mesh(sideGeo, shellMat);
+    rightW.position.set(2.27, wallY, 0);
+    rightW.castShadow = true;
+    rightW.receiveShadow = true;
+    group.add(rightW);
+    // Top panel (slight inset so the corner posts are still visible)
+    const topPanel = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.08, 3.78), shellMat);
+    topPanel.position.set(0, postH + 0.55, 0);
+    topPanel.castShadow = true;
+    topPanel.receiveShadow = true;
+    group.add(topPanel);
+    // Brand-color accent strip along the top front edge (Bambu green, BCN3D teal, Markforged gold, etc.)
+    const accentStripMat = new THREE.MeshStandardMaterial({
+      color: accentColor, emissive: accentColor, emissiveIntensity: 0.3, roughness: 0.4
+    });
+    const accentStrip = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.08, 0.04), accentStripMat);
+    accentStrip.position.set(0, postH + 0.55, 1.92);
+    group.add(accentStrip);
+    // Glass front door — see-through to the bed/gantry inside
+    const glassMat = new THREE.MeshPhysicalMaterial({
+      color: 0xc7e5ff, transparent: true, opacity: 0.32,
+      roughness: 0.05, metalness: 0.0, transmission: 0.7, thickness: 0.05,
+      side: THREE.DoubleSide
+    });
+    const door = new THREE.Mesh(new THREE.PlaneGeometry(4.3, wallH - 0.4), glassMat);
+    door.position.set(0, wallY - 0.05, 1.93);
+    group.add(door);
+    // Door frame trim (dark thin strips top and bottom of glass)
+    const trimMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.5, metalness: 0.5 });
+    const trimTop = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.06, 0.05), trimMat);
+    trimTop.position.set(0, postH + 0.35, 1.94);
+    group.add(trimTop);
+    const trimBot = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.06, 0.05), trimMat);
+    trimBot.position.set(0, 0.85, 1.94);
+    group.add(trimBot);
+    // Door handle (right side)
+    const handleMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.85 });
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.08), handleMat);
+    handle.position.set(2.0, wallY, 1.97);
+    group.add(handle);
   }
 
   group.userData.zCarriage = zCarriage;
