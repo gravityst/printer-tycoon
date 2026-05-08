@@ -2,10 +2,60 @@
 // Printer Tycoon — Three.js 3D printers + game logic + list-view shop.
 // =====================================================================
 
-const STATE_KEY = 'printer-tycoon-state-v3';
+const STATE_KEY = 'printer-tycoon-state-v4';
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
 const ORDER_SPAWN_BASE_HOURS = 5;
+
+// Nozzle catalog: size (mm) × hardness. Each slot has one installed at a time.
+// Real-world tradeoff: smaller = finer detail but slow; bigger = fast but coarse.
+// Hardened steel is required to print abrasive filaments (PA-CF, glass-filled, etc.)
+const NOZZLE_TYPES = [
+  { id: 'b02', size: 0.2, hardened: false, cost: 25,  label: '0.2mm Brass',     desc: 'High detail · slow' },
+  { id: 'b04', size: 0.4, hardened: false, cost: 5,   label: '0.4mm Brass',     desc: 'Default · balanced' },
+  { id: 'b06', size: 0.6, hardened: false, cost: 10,  label: '0.6mm Brass',     desc: 'Faster · less detail' },
+  { id: 'b08', size: 0.8, hardened: false, cost: 18,  label: '0.8mm Brass',     desc: 'Big parts · low detail' },
+  { id: 'h04', size: 0.4, hardened: true,  cost: 55,  label: '0.4mm Hardened',  desc: 'Default + abrasive-safe' },
+  { id: 'h06', size: 0.6, hardened: true,  cost: 75,  label: '0.6mm Hardened',  desc: 'Faster + abrasive-safe' },
+  { id: 'h08', size: 0.8, hardened: true,  cost: 95,  label: '0.8mm Hardened',  desc: 'Big & abrasive-safe' },
+  { id: 'r04', size: 0.4, hardened: true,  cost: 280, label: '0.4mm Ruby',      desc: 'Lifetime nozzle · premium' },
+];
+
+// Nozzle effect multipliers — applied to the printer base specs at job-assign time
+const NOZZLE_EFFECTS = {
+  0.2: { speed: 0.5,  precision: 1.18, reliability: 0.95 },
+  0.4: { speed: 1.0,  precision: 1.0,  reliability: 1.0  },
+  0.6: { speed: 1.55, precision: 0.88, reliability: 1.0  },
+  0.8: { speed: 2.10, precision: 0.78, reliability: 0.92 },
+};
+
+// Used-printer depreciation: 75% of new at 0 hours, drops with use, floor at 15%.
+function calcSellPrice(slot) {
+  const printer = printerById(slot.printerId);
+  const basePrice = slot.purchasePrice ?? (printer ? printer.price : 200);
+  const hoursWorn = slot.totalHours || 0;
+  // Linear decay until ~1200 hours, then floor.
+  const dep = Math.min(0.60, hoursWorn * 0.0005);
+  const factor = Math.max(0.15, 0.75 - dep);
+  return Math.round(basePrice * factor);
+}
+
+// A nozzle is "compatible" with a material if it can physically print it.
+// Abrasive filaments wear brass nozzles down in hours — game rule: must be hardened.
+const ABRASIVE_MATERIALS = new Set(['pa-cf', 'fiber-carbon', 'fiber-kevlar', 'fiber-fiberglass', 'sls-pa12-gf']);
+
+function nozzleCompatible(slot, materialId) {
+  if (ABRASIVE_MATERIALS.has(materialId) && !slot.nozzleHardened) {
+    return { ok: false, reason: 'Need hardened nozzle' };
+  }
+  return { ok: true };
+}
+
+// Printers that ship from factory with a hardened nozzle (their stock is abrasive-rated)
+const SHIP_WITH_HARDENED = new Set([
+  'prusa-mk4s', 'bambu-p1s-ams', 'bambu-x1c-ams', 'bambu-x1e', 'bambu-h2d',
+  'prusa-xl-5tool', 'voron-2-4', 'qidi-x-max-3', 'bcn3d-sigma-d25',
+]);
 
 const STARTING_PRINTER = 'ender-3-v3-se';
 const STARTING_MONEY = 500;
@@ -118,6 +168,21 @@ const printerById = id => printersCat.find(p => p.id === id);
 const materialById = id => materialsCat.find(m => m.id === id);
 const productById = id => productsCat.find(p => p.id === id);
 
+function makeSlot(printerId, slotId, purchasePrice = null) {
+  const printer = printersCat.find(p => p.id === printerId);
+  const price = purchasePrice ?? (printer ? printer.price : 200);
+  const hardened = SHIP_WITH_HARDENED.has(printerId);
+  return {
+    printerId, slotId,
+    state: 'idle',
+    job: null,
+    nozzleSize: 0.4,
+    nozzleHardened: hardened,
+    totalHours: 0,
+    purchasePrice: price,
+  };
+}
+
 function defaultState() {
   return {
     money: STARTING_MONEY,
@@ -125,7 +190,7 @@ function defaultState() {
     hour: 8,
     reputation: 0,
     shipped: 0,
-    printers: [{ printerId: STARTING_PRINTER, slotId: 1, state: 'idle', job: null }],
+    printers: [makeSlot(STARTING_PRINTER, 1)],
     inventory: { [STARTING_FILAMENT_ID]: STARTING_FILAMENT_GRAMS },
     orders: [],
     nextOrderInHours: 0.5,
@@ -134,12 +199,27 @@ function defaultState() {
   };
 }
 
+// Migrate any pre-v4 slot fields that are missing (defensive).
+function migrateSlot(slot) {
+  if (slot.nozzleSize === undefined) slot.nozzleSize = 0.4;
+  if (slot.nozzleHardened === undefined) slot.nozzleHardened = SHIP_WITH_HARDENED.has(slot.printerId);
+  if (slot.totalHours === undefined) slot.totalHours = 0;
+  if (slot.purchasePrice === undefined) {
+    const p = printerById(slot.printerId);
+    slot.purchasePrice = p ? p.price : 200;
+  }
+  return slot;
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(STATE_KEY);
     if (raw) {
       const s = JSON.parse(raw);
-      if (s && typeof s.money === 'number') return s;
+      if (s && typeof s.money === 'number') {
+        if (Array.isArray(s.printers)) s.printers.forEach(migrateSlot);
+        return s;
+      }
     }
   } catch (e) {}
   return defaultState();
@@ -246,15 +326,29 @@ function canAssign(order, slot) {
   if (order.techRequired && !order.techRequired.includes(printer.tech)) {
     return { ok: false, reason: `Wrong tech (needs ${order.techRequired.join('/')})` };
   }
-  if (order.minPrecision && printer.precision < order.minPrecision) {
-    return { ok: false, reason: `Precision too low (need ${order.minPrecision})` };
+  // Effective precision is gated by the nozzle size as well as the printer
+  const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
+  const effectivePrecision = printer.precision * nozEff.precision;
+  if (order.minPrecision && effectivePrecision < order.minPrecision) {
+    return { ok: false, reason: `Precision too low (need ${order.minPrecision}, ${slot.nozzleSize}mm gives ${effectivePrecision.toFixed(2)})` };
   }
   const bv = printer.buildVolumeMM, need = order.minBuildVolumeMM;
   if (bv && need && (bv[0] < need[0] || bv[1] < need[1] || bv[2] < need[2])) {
     return { ok: false, reason: `Build volume too small` };
   }
-  const matId = order.materialOptions.find(m => printer.materials.includes(m));
-  if (!matId) return { ok: false, reason: 'material mismatch' };
+  // Pick the FIRST printable material that is also nozzle-compatible
+  const matId = order.materialOptions.find(m => {
+    if (!printer.materials.includes(m)) return false;
+    return nozzleCompatible(slot, m).ok;
+  });
+  if (!matId) {
+    // Better diagnostic
+    const supported = order.materialOptions.find(m => printer.materials.includes(m));
+    if (supported && ABRASIVE_MATERIALS.has(supported) && !slot.nozzleHardened) {
+      return { ok: false, reason: `${materialById(supported)?.name || supported} needs hardened nozzle` };
+    }
+    return { ok: false, reason: 'material mismatch' };
+  }
   const stock = state.inventory[matId] || 0;
   if (stock < order.grams) {
     const m = materialById(matId);
@@ -271,7 +365,8 @@ function assignOrder(orderId, slotIdx) {
   if (!check.ok) { toast(check.reason, 'error'); return; }
   const printer = printerById(slot.printerId);
   state.inventory[check.materialId] -= order.grams;
-  const speedFactor = effectiveThroughput(printer) / 30;
+  const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
+  const speedFactor = (effectiveThroughput(printer) / 30) * nozEff.speed;
   const adjustedHours = order.baseHours / speedFactor;
   slot.state = 'printing';
   slot.job = {
@@ -284,7 +379,7 @@ function assignOrder(orderId, slotIdx) {
     hoursElapsed: 0,
     payout: order.basePrice,
     qualityValue: order.qualityValue,
-    precision: printer.precision,
+    precision: printer.precision * nozEff.precision,
     color: colorForJob(order.productId),
   };
   state.orders = state.orders.filter(o => o.id !== orderId);
@@ -358,15 +453,150 @@ function buyPrinter(id) {
   }
   if (!confirm(`Buy ${printer.brand} ${printer.model} for ${fmtPrice(printer.price)}?`)) return;
   state.money -= printer.price;
-  state.printers.push({
-    printerId: id,
-    slotId: state.nextSlotId++,
-    state: 'idle',
-    job: null,
-  });
+  state.printers.push(makeSlot(id, state.nextSlotId++, printer.price));
   toast(`Welcome, ${printer.model}!`, 'success');
   render();
   closeShop();
+}
+
+// =====================================================================
+// printer management — nozzle swap + sell
+// =====================================================================
+let manageSlotIdx = -1;
+
+function openManage(slotIdx) {
+  manageSlotIdx = slotIdx;
+  document.getElementById('manageModal').classList.add('open');
+  renderManage();
+}
+
+function closeManage() {
+  manageSlotIdx = -1;
+  document.getElementById('manageModal').classList.remove('open');
+}
+
+function changeNozzle(nozzleId) {
+  if (manageSlotIdx < 0) return;
+  const slot = state.printers[manageSlotIdx];
+  if (!slot) return;
+  if (slot.state !== 'idle') { toast('Stop the print first', 'error'); return; }
+  const noz = NOZZLE_TYPES.find(n => n.id === nozzleId);
+  if (!noz) return;
+  if (slot.nozzleSize === noz.size && slot.nozzleHardened === noz.hardened) {
+    toast('Already installed', 'error');
+    return;
+  }
+  if (state.money < noz.cost) { toast(`Need ${fmtPrice(noz.cost)}`, 'error'); return; }
+  if (!confirm(`Swap to ${noz.label} for ${fmtPrice(noz.cost)}?`)) return;
+  state.money -= noz.cost;
+  slot.nozzleSize = noz.size;
+  slot.nozzleHardened = noz.hardened;
+  toast(`Installed ${noz.label}`, 'success');
+  renderManage();
+  render();
+}
+
+function sellPrinter(slotIdxArg) {
+  const slotIdx = slotIdxArg !== undefined ? slotIdxArg : manageSlotIdx;
+  if (slotIdx < 0) return;
+  if (state.printers.length <= 1) { toast('Need at least one printer', 'error'); return; }
+  const slot = state.printers[slotIdx];
+  if (!slot) return;
+  if (slot.state !== 'idle') { toast('Stop the print first', 'error'); return; }
+  const printer = printerById(slot.printerId);
+  const sellAmt = calcSellPrice(slot);
+  if (!confirm(`Sell ${printer.brand} ${printer.model} for ${fmtPrice(sellAmt)}?\nUsed: ${slot.totalHours.toFixed(1)} hours\n(Original: ${fmtPrice(slot.purchasePrice)})`)) return;
+  state.money += sellAmt;
+  state.printers.splice(slotIdx, 1);
+  // Dispose any 3D scene tied to this card before re-render
+  closeManage();
+  toast(`Sold for ${fmtPrice(sellAmt)}`, 'success');
+  // Force the workshop card list to rebuild fully so canvases + scenes get cleaned up
+  document.getElementById('printers').innerHTML = '';
+  for (const info of printerScenes.values()) info.renderer.dispose();
+  printerScenes.clear();
+  render();
+}
+
+function renderManage() {
+  if (manageSlotIdx < 0) return;
+  const slot = state.printers[manageSlotIdx];
+  if (!slot) return closeManage();
+  const printer = printerById(slot.printerId);
+  if (!printer) return closeManage();
+
+  document.getElementById('manageSubtitle').innerHTML =
+    `<span class="brand">${printer.brand}</span> <strong>${printer.model}</strong> · <span class="printer-tier ${printer.tier}">${printer.tier}</span>`;
+
+  const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
+  const effThroughput = effectiveThroughput(printer) * nozEff.speed;
+  const effPrecision = printer.precision * nozEff.precision;
+  const effReliability = printer.baseReliability * nozEff.reliability;
+  const sellAmt = calcSellPrice(slot);
+  const isIdle = slot.state === 'idle';
+  const isOnly = state.printers.length <= 1;
+
+  // Stats
+  const statsHtml = `
+    <div class="manage-stat-row"><span class="manage-stat-label">Tech</span><span class="manage-stat-value">${printer.tech}</span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Build volume</span><span class="manage-stat-value">${printer.buildVolumeMM.join(' × ')} mm</span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Throughput (now)</span><span class="manage-stat-value">${effThroughput.toFixed(0)} g/hr <span class="muted">(${effectiveThroughput(printer)} stock)</span></span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Precision (now)</span><span class="manage-stat-value">${effPrecision.toFixed(2)} <span class="muted">(${printer.precision.toFixed(2)} stock)</span></span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Reliability (now)</span><span class="manage-stat-value">${(effReliability*100).toFixed(0)}% <span class="muted">(${(printer.baseReliability*100).toFixed(0)}% stock)</span></span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Multi-material</span><span class="manage-stat-value">${printer.multiMaterialColors > 0 ? `${printer.multiMaterialColors} colors` : 'single'}</span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Power draw</span><span class="manage-stat-value">${printer.powerW} W</span></div>
+    <div class="manage-stat-row"><span class="manage-stat-label">Released</span><span class="manage-stat-value">${printer.released}</span></div>
+  `;
+
+  // Nozzle picker
+  const nozzleHtml = NOZZLE_TYPES.map(noz => {
+    const isCurrent = (noz.size === slot.nozzleSize && noz.hardened === slot.nozzleHardened);
+    const eff = NOZZLE_EFFECTS[noz.size];
+    const speedTxt = `${eff.speed.toFixed(2)}× speed`;
+    const precTxt = `${eff.precision.toFixed(2)}× precision`;
+    const canAfford = state.money >= noz.cost;
+    const action = isCurrent
+      ? `<div class="nozzle-current">Currently installed</div>`
+      : `<button class="nozzle-buy" onclick="window.changeNozzle('${noz.id}')" ${canAfford && isIdle ? '' : 'disabled'}>${isIdle ? `Install ${fmtPrice(noz.cost)}` : 'Busy'}</button>`;
+    return `
+      <div class="nozzle-card${isCurrent ? ' current' : ''}">
+        <div class="nozzle-name">${noz.label}</div>
+        <div class="nozzle-desc">${noz.desc}</div>
+        <div class="nozzle-effects">${speedTxt} · ${precTxt}</div>
+        ${action}
+      </div>
+    `;
+  }).join('');
+
+  document.getElementById('manageBody').innerHTML = `
+    <div class="manage-section">
+      <h3>Stats</h3>
+      ${statsHtml}
+    </div>
+    <div class="manage-section">
+      <h3>Nozzle <span class="muted">— current: ${slot.nozzleSize}mm ${slot.nozzleHardened ? 'hardened' : 'brass'}</span></h3>
+      <div class="nozzle-grid">${nozzleHtml}</div>
+    </div>
+    <div class="manage-section sell-section-wrap">
+      <h3>Sell this printer</h3>
+      <div class="sell-row">
+        <div class="sell-info">
+          <div class="sell-price-display">${fmtPrice(sellAmt)}</div>
+          <div class="sell-meta">
+            Original: ${fmtPrice(slot.purchasePrice)} <span class="sep">·</span>
+            ${slot.totalHours.toFixed(1)} hrs used <span class="sep">·</span>
+            ${((sellAmt/slot.purchasePrice)*100).toFixed(0)}% of new
+          </div>
+          <div class="sell-meta muted">Starts at 75% of new, drops with hours used (floor 15%)</div>
+        </div>
+        <button class="sell-button" onclick="window.sellPrinter()" ${(isIdle && !isOnly) ? '' : 'disabled'}>${
+          isOnly ? "Can't sell only printer" :
+          !isIdle ? "Currently printing" :
+          'Sell'
+        }</button>
+      </div>
+    </div>
+  `;
 }
 
 const ICON_FOR_CAT = { fdm: '⚙', resin: '✦', industrial: '▣' };
@@ -429,6 +659,7 @@ function tick() {
   for (const slot of state.printers) {
     if (slot.state === 'printing' && slot.job) {
       slot.job.hoursElapsed += gameHours;
+      slot.totalHours = (slot.totalHours || 0) + gameHours;
       if (slot.job.hoursElapsed >= slot.job.hoursTotal) completeJob(slot);
     }
   }
@@ -1499,9 +1730,13 @@ function ensurePrinterCards() {
       <div class="printer-info">
         <div class="printer-name"></div>
         <div class="printer-specs"></div>
+        <div class="printer-meta"></div>
         <div class="printer-status"></div>
         <div class="progress" style="display:none"><div class="fill"></div></div>
         <div class="job-info" style="display:none"></div>
+        <div class="printer-actions">
+          <button class="printer-manage-btn"></button>
+        </div>
       </div>
     `;
     root.appendChild(card);
@@ -1531,6 +1766,19 @@ function renderPrinters() {
       ` <span class="printer-tier ${printer.tier}">${printer.tier}</span>`;
     card.querySelector('.printer-specs').textContent =
       `${printer.tech} · ${printer.buildVolumeMM.join('×')}mm · ${effectiveThroughput(printer)} g/hr · ${(printer.baseReliability*100).toFixed(0)}% reliable`;
+    const meta = card.querySelector('.printer-meta');
+    if (meta) {
+      const sellAmt = calcSellPrice(slot);
+      meta.innerHTML =
+        `<span class="meta-pill">${slot.nozzleSize}mm ${slot.nozzleHardened ? '<span class="hardened">hardened</span>' : 'brass'}</span>` +
+        ` <span class="meta-pill">${(slot.totalHours||0).toFixed(1)}h used</span>` +
+        ` <span class="meta-pill resale">${fmtPrice(sellAmt)} resale</span>`;
+    }
+    const manageBtn = card.querySelector('.printer-manage-btn');
+    if (manageBtn) {
+      manageBtn.textContent = 'Manage / Sell';
+      manageBtn.onclick = () => openManage(i);
+    }
 
     const status = card.querySelector('.printer-status');
     const progress = card.querySelector('.progress');
@@ -1684,6 +1932,10 @@ window.buyPrinter = buyPrinter;
 window.openShop = openShop;
 window.closeShop = closeShop;
 window.setShopFilter = setShopFilter;
+window.openManage = openManage;
+window.closeManage = closeManage;
+window.changeNozzle = changeNozzle;
+window.sellPrinter = sellPrinter;
 
 async function waitForThree() {
   if (window.THREE) return;

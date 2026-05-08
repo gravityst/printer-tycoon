@@ -104,6 +104,100 @@
   .progress .fill { height: 100%; background: linear-gradient(90deg, #4ade80, #22c55e); transition: width 0.3s; }
   .job-info { font-size: 12px; color: #555; margin-top: 6px; display: flex; justify-content: space-between; }
 
+  .printer-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .meta-pill {
+    font-size: 10px; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px;
+    background: #f3f4f6; color: #475569;
+  }
+  .meta-pill .hardened { color: #b91c1c; font-weight: 700; }
+  .meta-pill.resale { background: #ecfdf5; color: #047857; }
+
+  .printer-actions { margin-top: 10px; display: flex; gap: 6px; }
+  .printer-manage-btn {
+    flex: 1; padding: 7px 10px; font-size: 11px; font-weight: 700;
+    border: 1px solid #d1d5db; border-radius: 6px;
+    background: #fff; color: #1a1a1a; cursor: pointer; font-family: inherit;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .printer-manage-btn:hover { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+
+  /* Manage modal — single printer detail + nozzle picker + sell */
+  .manage-card {
+    inset: 5% 8% !important;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .manage-body {
+    flex: 1; overflow-y: auto;
+  }
+  .manage-section {
+    padding: 16px 24px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  .manage-section h3 {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1px; color: #888; margin-bottom: 10px;
+  }
+  .manage-section h3 .muted { font-weight: 500; color: #aaa; text-transform: none; letter-spacing: 0; }
+  .manage-stat-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 13px; padding: 4px 0;
+  }
+  .manage-stat-label { color: #6b7280; }
+  .manage-stat-value { font-weight: 600; color: #111; }
+  .manage-stat-value .muted { color: #9ca3af; font-weight: 500; font-size: 11px; margin-left: 4px; }
+
+  .nozzle-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+  }
+  .nozzle-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 12px;
+    background: #fff;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .nozzle-card.current {
+    border-color: #4ade80;
+    background: #f0fdf4;
+  }
+  .nozzle-name { font-weight: 700; font-size: 13px; color: #111; }
+  .nozzle-desc { font-size: 11px; color: #6b7280; }
+  .nozzle-effects { font-size: 11px; color: #475569; font-family: ui-monospace, monospace; }
+  .nozzle-current { font-size: 11px; color: #047857; font-weight: 700; margin-top: 4px; }
+  .nozzle-buy {
+    margin-top: 4px;
+    padding: 6px 12px; font-size: 11px; font-weight: 700;
+    background: #1a1a1a; color: #fff; border: none; border-radius: 6px;
+    cursor: pointer; font-family: inherit; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .nozzle-buy:hover:not(:disabled) { background: #4ade80; color: #052e16; }
+  .nozzle-buy:disabled { background: #e5e7eb; color: #9ca3af; cursor: not-allowed; }
+
+  .sell-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+  }
+  .sell-info { flex: 1; min-width: 0; }
+  .sell-price-display { font-size: 32px; font-weight: 800; color: #111; line-height: 1; }
+  .sell-meta { font-size: 12px; color: #4b5563; margin-top: 4px; }
+  .sell-meta .sep { color: #d1d5db; margin: 0 4px; }
+  .sell-meta.muted { color: #9ca3af; font-size: 11px; }
+  .sell-button {
+    padding: 12px 26px; font-size: 13px; font-weight: 800;
+    background: #b91c1c; color: white; border: none; border-radius: 8px;
+    cursor: pointer; font-family: inherit; text-transform: uppercase; letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+  .sell-button:hover:not(:disabled) { background: #991b1b; }
+  .sell-button:disabled {
+    background: #e5e7eb; color: #9ca3af; cursor: not-allowed;
+  }
+  .modal-header .subtitle .brand { color: #6b7280; font-weight: 500; }
+
   /* ---- Order card ---- */
   .order-card {
     border: 1px solid #e5e7eb; border-radius: 10px;
@@ -352,6 +446,20 @@
     <div id="inventory"></div>
   </section>
 </main>
+
+<div class="modal" id="manageModal">
+  <div class="modal-overlay" onclick="window.closeManage()"></div>
+  <div class="modal-card manage-card">
+    <div class="modal-header">
+      <div>
+        <h2>Manage Printer</h2>
+        <div class="subtitle" id="manageSubtitle">—</div>
+      </div>
+      <button class="close" onclick="window.closeManage()">×</button>
+    </div>
+    <div class="manage-body" id="manageBody"></div>
+  </div>
+</div>
 
 <div class="modal" id="shopModal">
   <div class="modal-overlay" onclick="window.closeShop()"></div>
