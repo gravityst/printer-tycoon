@@ -5,7 +5,7 @@
 const STATE_KEY = 'printer-tycoon-state-v4';
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
-const ORDER_SPAWN_BASE_HOURS = 5;
+const ORDER_SPAWN_BASE_HOURS = 12;
 
 // Nozzle catalog: size (mm) × hardness. Each slot has one installed at a time.
 // Real-world tradeoff: smaller = finer detail but slow; bigger = fast but coarse.
@@ -1454,34 +1454,34 @@ function buildFDM3D(printer) {
   const railLocZ = isCantilever ? -0.55 : 0;
   const bodyLocZ = isCantilever ?  1.00 : 0;
 
-  // 1. Saddle — wraps the rail
-  const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.42, 0.50), carriageMat);
-  saddle.position.set(0, 0.05, railLocZ);
+  // 1. Saddle — wraps the rail (visibly hugs the rail in Y and Z)
+  const saddle = new THREE.Mesh(rbox(0.95, 0.55, 0.62, 3, 0.05), carriageMat);
+  saddle.position.set(0, 0.0, railLocZ);
   saddle.castShadow = true;
   headGroup.add(saddle);
 
   // 2. Cantilever mount arm — clearly bridges from saddle (at rail) to the shroud (over bed)
-  if (isCantilever) {
-    const armLen = bodyLocZ - railLocZ;  // 1.55 units
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.20, armLen), carriageMat);
-    arm.position.set(0, 0.10, (railLocZ + bodyLocZ) / 2);
-    arm.castShadow = true;
-    headGroup.add(arm);
-    // Arm reinforcement gusset (small block hugging the saddle)
-    const gusset = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.30, 0.30), carriageMat);
-    gusset.position.set(0, -0.05, railLocZ + 0.20);
-    headGroup.add(gusset);
-  }
-
-  // 3. Head shroud (accent-colored, clearcoat painted plastic)
   const headShellMat = new THREE.MeshPhysicalMaterial({
     color: accentColor, roughness: 0.35, metalness: 0.15,
     clearcoat: 0.7, clearcoatRoughness: 0.15
   });
-  const headBody = new THREE.Mesh(rbox(0.78, 0.62, 0.50, 3, 0.04), headShellMat);
-  headBody.position.set(0, -0.22, bodyLocZ);
+  if (isCantilever) {
+    const armLen = bodyLocZ - railLocZ;  // 1.55 units
+    const arm = new THREE.Mesh(rbox(0.55, 0.25, armLen, 2, 0.03), carriageMat);
+    arm.position.set(0, 0.05, (railLocZ + bodyLocZ) / 2);
+    arm.castShadow = true;
+    headGroup.add(arm);
+  }
+
+  // 3. Head shroud (accent-colored) — DIRECTLY UNDERNEATH the saddle, overlapping in Y so there's NO visible gap.
+  const headBody = new THREE.Mesh(rbox(0.85, 0.75, 0.55, 3, 0.05), headShellMat);
+  headBody.position.set(0, -0.42, bodyLocZ);   // top at -0.045, bottom at -0.795 (saddle bottom at -0.275 → real overlap)
   headBody.castShadow = true;
   headGroup.add(headBody);
+  // Top connecting collar — fills any visible gap between saddle and shroud
+  const collar = new THREE.Mesh(rbox(0.78, 0.18, 0.52, 2, 0.03), headShellMat);
+  collar.position.set(0, -0.05, bodyLocZ);
+  headGroup.add(collar);
 
   // 4. Heatsink fins under the shroud
   for (let i = 0; i < 3; i++) {
@@ -2104,42 +2104,104 @@ function createShapeGeometry(shape) {
   }
 }
 
+// Build a humanoid figure (head + torso + arms + legs) — for "Articulated Toy",
+// "Tabletop Miniatures", "Surgical Implant" etc.
+function buildHumanoidGroup(mat) {
+  const THREE = window.THREE;
+  const g = new THREE.Group();
+  // Legs (anchor at y=0)
+  const legGeo = new THREE.BoxGeometry(0.18, 0.6, 0.18);
+  const lL = new THREE.Mesh(legGeo, mat); lL.position.set(-0.13, 0.3, 0); lL.castShadow = true; g.add(lL);
+  const lR = new THREE.Mesh(legGeo, mat); lR.position.set( 0.13, 0.3, 0); lR.castShadow = true; g.add(lR);
+  // Hip joint
+  const hip = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 0.22), mat); hip.position.y = 0.66; g.add(hip);
+  // Torso
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.62, 0.30), mat);
+  torso.position.y = 1.04; torso.castShadow = true; g.add(torso);
+  // Arms (slightly offset)
+  const armGeo = new THREE.BoxGeometry(0.14, 0.55, 0.14);
+  const aL = new THREE.Mesh(armGeo, mat); aL.position.set(-0.34, 1.05, 0); aL.castShadow = true; g.add(aL);
+  const aR = new THREE.Mesh(armGeo, mat); aR.position.set( 0.34, 1.05, 0); aR.castShadow = true; g.add(aR);
+  // Shoulders (small joint balls)
+  const shoulderGeo = new THREE.SphereGeometry(0.10, 12, 8);
+  const sL = new THREE.Mesh(shoulderGeo, mat); sL.position.set(-0.30, 1.30, 0); g.add(sL);
+  const sR = new THREE.Mesh(shoulderGeo, mat); sR.position.set( 0.30, 1.30, 0); g.add(sR);
+  // Neck
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.10, 0.10, 12), mat);
+  neck.position.y = 1.43; g.add(neck);
+  // Head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.20, 14, 10), mat);
+  head.position.y = 1.62; head.castShadow = true; g.add(head);
+  return g;
+}
+
+// Build a quadcopter drone frame — central hub + 4 X-pattern arms + motor pods
+function buildDroneGroup(mat) {
+  const THREE = window.THREE;
+  const g = new THREE.Group();
+  // Central hub
+  const hub = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.20, 0.45), mat);
+  hub.position.y = 0.10; hub.castShadow = true; g.add(hub);
+  // 4 arms in X pattern
+  for (let i = 0; i < 4; i++) {
+    const a = (i * Math.PI / 2) + (Math.PI / 4);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.10, 0.18), mat);
+    arm.rotation.y = a;
+    arm.position.set(Math.cos(a) * 0.45, 0.10, Math.sin(a) * 0.45);
+    arm.castShadow = true;
+    g.add(arm);
+    // Motor pod at tip
+    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.18, 14), mat);
+    motor.position.set(Math.cos(a) * 0.85, 0.20, Math.sin(a) * 0.85);
+    motor.castShadow = true;
+    g.add(motor);
+    // Propeller hint (thin disc on top)
+    const prop = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.02, 16), mat);
+    prop.position.set(Math.cos(a) * 0.85, 0.31, Math.sin(a) * 0.85);
+    g.add(prop);
+  }
+  return g;
+}
+
+// Build a stylized helmet (dome with face cutout hint)
+function buildHelmetGroup(mat) {
+  const THREE = window.THREE;
+  const g = new THREE.Group();
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.85, 24, 14, 0, Math.PI * 2, 0, Math.PI * 0.55), mat);
+  dome.position.y = 0.0; dome.castShadow = true; g.add(dome);
+  // Face plate (visor) — slightly darker
+  const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.7 });
+  const visor = new THREE.Mesh(new THREE.SphereGeometry(0.72, 18, 10, Math.PI * 0.8, Math.PI * 0.4, Math.PI * 0.4, Math.PI * 0.3), visorMat);
+  visor.position.y = 0.0;
+  g.add(visor);
+  return g;
+}
+
 function createModelMesh(productId, color) {
   const THREE = window.THREE;
   const shape = SHAPE_FOR_PRODUCT[productId] || 'box';
+  const colorInt = hexToInt(color);
+  const mat = new THREE.MeshStandardMaterial({
+    color: colorInt, roughness: 0.65, metalness: 0.1,
+  });
+
+  // Multi-piece groups for shapes that need to look like real objects
+  if (shape === 'humanoid') return buildHumanoidGroup(mat);
+  if (shape === 'cross')    return buildDroneGroup(mat);
+  if (shape === 'dome')     return buildHelmetGroup(mat);
+
   const geo = createShapeGeometry(shape);
 
-  // For shape that's a 2D extrude (gear, bracket, angular), rotate so extrude axis is Y
+  // For shapes that are 2D extrudes (gear, bracket, angular), rotate so extrude axis is Y
   if (shape === 'gear' || shape === 'bracket' || shape === 'angular') {
     geo.rotateX(-Math.PI / 2);
   }
-  // Lathe geometry already has Y as up.
-
-  // Compute bbox and translate so bottom is at y=0
   geo.computeBoundingBox();
   const bb = geo.boundingBox;
   geo.translate(0, -bb.min.y, 0);
-
-  const colorInt = hexToInt(color);
-  const mat = new THREE.MeshStandardMaterial({
-    color: colorInt,
-    roughness: 0.65,
-    metalness: 0.1,
-  });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-
-  // For 'cross' (drone), add second perpendicular bar
-  if (shape === 'cross') {
-    const bar2Geo = new THREE.BoxGeometry(0.35, 0.18, 2.0);
-    bar2Geo.translate(0, 0.09, 0);
-    const bar2 = new THREE.Mesh(bar2Geo, mat);
-    bar2.castShadow = true;
-    bar2.receiveShadow = true;
-    mesh.add(bar2);
-  }
-
   return mesh;
 }
 
@@ -2150,8 +2212,7 @@ function updateModel(info, slot) {
   if (!printing) {
     if (info.modelMesh) {
       info.scene.remove(info.modelMesh);
-      info.modelMesh.geometry.dispose();
-      info.modelMesh.material.dispose();
+      disposeModelMesh(info.modelMesh);
       info.modelMesh = null;
       info.modelJobId = null;
     }
@@ -2161,8 +2222,7 @@ function updateModel(info, slot) {
   if (info.modelJobId !== slot.job.orderId) {
     if (info.modelMesh) {
       info.scene.remove(info.modelMesh);
-      info.modelMesh.geometry.dispose();
-      info.modelMesh.material.dispose();
+      disposeModelMesh(info.modelMesh);
     }
     const mesh = createModelMesh(slot.job.productId, slot.job.color);
     const printer = printerById(slot.printerId);
@@ -2204,9 +2264,27 @@ function updateModel(info, slot) {
   }
 }
 
+// Dispose any geometries/materials anywhere in a mesh OR group hierarchy.
+function disposeModelMesh(node) {
+  if (!node) return;
+  node.traverse(obj => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+      else obj.material.dispose();
+    }
+  });
+}
+
 function computeModelHeight(mesh) {
-  const bb = mesh.geometry.boundingBox;
-  return bb ? (bb.max.y - bb.min.y) : 1;
+  // Single-mesh shapes have geometry.boundingBox; Group shapes (humanoid, drone,
+  // helmet) need to compute the combined bbox across all children.
+  if (mesh.geometry && mesh.geometry.boundingBox) {
+    return mesh.geometry.boundingBox.max.y - mesh.geometry.boundingBox.min.y;
+  }
+  const box = new THREE.Box3();
+  box.setFromObject(mesh);
+  return Math.max(0.1, box.max.y - box.min.y);
 }
 
 function animateScene(info, slot) {
