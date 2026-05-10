@@ -155,14 +155,17 @@ let shopFilter = 'all';
 // catalog + state
 // =====================================================================
 async function loadCatalogs() {
+  // Cache-bust so users always get the freshest catalog after a deploy
+  const v = STATE_KEY;
   const [pr, mt, pd] = await Promise.all([
-    fetch('data/printers.json').then(r => r.json()),
-    fetch('data/materials.json').then(r => r.json()),
-    fetch('data/products.json').then(r => r.json()),
+    fetch(`data/printers.json?v=${v}`).then(r => r.json()),
+    fetch(`data/materials.json?v=${v}`).then(r => r.json()),
+    fetch(`data/products.json?v=${v}`).then(r => r.json()),
   ]);
   printersCat = pr.printers;
   materialsCat = mt.materials;
   productsCat = pd.products;
+  console.log(`[Print3D] Loaded ${materialsCat.length} materials, ${printersCat.length} printers, ${productsCat.length} products`);
 }
 
 const printerById = id => printersCat.find(p => p.id === id);
@@ -2547,11 +2550,16 @@ function renderInventory() {
   const root = document.getElementById('inventory');
   root.innerHTML = '';
 
-  // Group materials by category
+  // Group materials by category. Any material with an unexpected category
+  // gets dropped into "powder" as a safe fallback so nothing is invisible.
   const groups = { filament: [], resin: [], powder: [], fiber: [] };
   materialsCat.forEach(m => {
     if (groups[m.category]) groups[m.category].push(m);
+    else groups.powder.push(m);
   });
+  // Show the total at the top of the section header (handled in render())
+  const totalEl = document.getElementById('inventoryTotal');
+  if (totalEl) totalEl.textContent = `${materialsCat.length} materials`;
   // Sort each group: stock first (so what you have is on top), then by price
   Object.keys(groups).forEach(k => {
     groups[k].sort((a, b) => {

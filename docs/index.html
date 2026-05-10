@@ -414,9 +414,25 @@
 
   /* ---- Material list (in inventory sidebar — all 39 materials grouped) ---- */
   .inventory-section #inventory {
-    max-height: calc(100vh - 200px);
+    max-height: calc(100vh - 220px);
     overflow-y: auto;
-    padding-right: 4px;
+    padding-right: 8px;
+    /* Visible scrollbar so users know there's more below the fold */
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) var(--bg-input);
+  }
+  .inventory-section #inventory::-webkit-scrollbar { width: 10px; }
+  .inventory-section #inventory::-webkit-scrollbar-track { background: var(--bg-input); border-radius: 5px; }
+  .inventory-section #inventory::-webkit-scrollbar-thumb {
+    background: var(--accent); border-radius: 5px; border: 2px solid var(--bg-input);
+  }
+  .inventory-section #inventory::-webkit-scrollbar-thumb:hover { background: var(--accent-bright); }
+  .inv-hint {
+    font-size: 10px; text-align: center; padding: 6px 0;
+    color: var(--accent); font-weight: 700; letter-spacing: 1px;
+    opacity: 0.7;
+    border-top: 1px dashed var(--border);
+    margin-top: 4px;
   }
   .inv-cat-header {
     display: flex; justify-content: space-between; align-items: baseline;
@@ -677,9 +693,10 @@
   </section>
   <section class="inventory-section">
     <h2>
-      Materials <span class="count">all in one list</span>
+      Materials <span class="count" id="inventoryTotal">— scrollable</span>
     </h2>
     <div id="inventory"></div>
+    <div class="inv-hint">↓ scroll for all categories ↓</div>
   </section>
 </main>
 
