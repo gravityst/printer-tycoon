@@ -339,14 +339,19 @@ function productCanRunOnSlot(product, slot) {
 }
 
 function spawnOrder() {
-  const eligible = productsCat.filter(p => p.unlockReputation <= state.reputation);
+  // A product is eligible if EITHER:
+  //   - the player's reputation has unlocked it, OR
+  //   - the player owns a printer that can physically run it
+  // (Owning the hardware should bring orders even if rep is still low —
+  //  otherwise an early Fuse 1+ purchase gives you 0 SLS orders.)
+  const repOK = p => p.unlockReputation <= state.reputation;
+  const printerOK = p => state.printers.some(slot => productCanRunOnSlot(p, slot));
+  const eligible = productsCat.filter(p => repOK(p) || printerOK(p));
   if (eligible.length === 0) return;
   // Prefer products that can actually be printed by the current workshop.
-  // 85% from compatible pool, 15% aspirational (incentive to upgrade).
-  const compatible = eligible.filter(p =>
-    state.printers.some(slot => productCanRunOnSlot(p, slot))
-  );
-  const pool = (compatible.length > 0 && Math.random() < 0.85) ? compatible : eligible;
+  // 90% from compatible pool, 10% aspirational (still a small upgrade nudge).
+  const compatible = eligible.filter(printerOK);
+  const pool = (compatible.length > 0 && Math.random() < 0.90) ? compatible : eligible;
   const product = pickWeighted(pool);
   const grams = rand(product.grams[0], product.grams[1]);
   const baseHours = rand(product.printHours[0], product.printHours[1]);
