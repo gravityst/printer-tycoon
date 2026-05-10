@@ -412,25 +412,58 @@
     border-color: var(--accent);
   }
 
-  /* ---- Material card ---- */
+  /* ---- Material list (in inventory sidebar — all 39 materials grouped) ---- */
+  .inventory-section #inventory {
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .inv-cat-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 10px; font-weight: 800;
+    color: var(--text-secondary); letter-spacing: 1.5px;
+    margin: 14px 0 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .inv-cat-header:first-child { margin-top: 0; }
+  .inv-cat-header .inv-cat-count {
+    font-size: 9px; color: var(--text-muted); font-weight: 600;
+  }
   .mat-card {
     border: 1px solid var(--border); border-radius: 8px;
-    padding: 10px 12px; margin-bottom: 8px;
+    padding: 8px 10px; margin-bottom: 6px;
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px;
     background: var(--bg-card);
   }
+  .mat-card.has-stock { border-color: rgba(16,185,129,0.4); }
+  .mat-card.incompat { opacity: 0.55; }
   .mat-info { flex: 1; min-width: 0; }
-  .mat-name { font-weight: 600; font-size: 13px; color: var(--text-primary); }
-  .mat-stock { font-size: 11px; color: var(--text-muted); }
+  .mat-name {
+    font-weight: 600; font-size: 12px; color: var(--text-primary);
+    display: flex; align-items: center; gap: 6px;
+    line-height: 1.2;
+  }
+  .mat-stock { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+  .mat-stock .stock-yes { color: var(--good); font-weight: 700; }
+  .mat-stock .mat-price { color: var(--text-secondary); }
+  .incompat-tag {
+    font-size: 8px; font-weight: 700;
+    background: rgba(239,68,68,0.12);
+    color: #fca5a5;
+    padding: 1px 5px; border-radius: 3px;
+    border: 1px solid rgba(239,68,68,0.25);
+    letter-spacing: 0.5px;
+  }
   .mat-buy {
-    padding: 6px 10px; font-size: 11px; font-weight: 600;
+    padding: 5px 9px; font-size: 10px; font-weight: 700;
     border: 1px solid var(--border); border-radius: 5px;
     background: var(--bg-input); color: var(--text-primary); cursor: pointer; font-family: inherit;
-    flex-shrink: 0;
+    flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.5px;
   }
   .mat-buy:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
-  .mat-buy:disabled { opacity: 0.4; cursor: not-allowed; }
+  .mat-buy:disabled { opacity: 0.35; cursor: not-allowed; }
 
   .empty { color: var(--text-muted); font-size: 13px; font-style: italic; padding: 16px 0; text-align: center; }
 
@@ -642,41 +675,13 @@
     <h2>Incoming Orders <span class="count" id="orderCount"></span></h2>
     <div id="orders"></div>
   </section>
-  <section>
+  <section class="inventory-section">
     <h2>
-      Filament &amp; Resin
-      <button class="shop-btn" onclick="window.openSupplies()">+ Supplies</button>
+      Materials <span class="count">all in one list</span>
     </h2>
     <div id="inventory"></div>
   </section>
 </main>
-
-<div class="modal" id="suppliesModal">
-  <div class="modal-overlay" onclick="window.closeSupplies()"></div>
-  <div class="modal-card">
-    <div class="modal-header">
-      <div>
-        <h2>Supplies</h2>
-        <div class="subtitle">Filament + resin from real brands · 1 kg/L per purchase</div>
-      </div>
-      <button class="close" onclick="window.closeSupplies()">×</button>
-    </div>
-    <div class="shop-filters" id="suppliesFilters">
-      <button class="active" data-filter="all" onclick="window.setSuppliesFilter('all')">All</button>
-      <button data-filter="filament" onclick="window.setSuppliesFilter('filament')">Filament</button>
-      <button data-filter="resin" onclick="window.setSuppliesFilter('resin')">Resin</button>
-      <button data-filter="powder" onclick="window.setSuppliesFilter('powder')">SLS/MJF Powder</button>
-      <button data-filter="metal" onclick="window.setSuppliesFilter('metal')">Metal Powder</button>
-      <button data-filter="fiber" onclick="window.setSuppliesFilter('fiber')">Markforged</button>
-      <button data-filter="pla" onclick="window.setSuppliesFilter('pla')">PLA</button>
-      <button data-filter="petg" onclick="window.setSuppliesFilter('petg')">PETG</button>
-      <button data-filter="abs" onclick="window.setSuppliesFilter('abs')">ABS</button>
-      <button data-filter="tpu-95a" onclick="window.setSuppliesFilter('tpu-95a')">TPU</button>
-      <button data-filter="pa-cf" onclick="window.setSuppliesFilter('pa-cf')">PA-CF</button>
-    </div>
-    <div class="supplies-list" id="suppliesList"></div>
-  </div>
-</div>
 
 <div class="modal" id="manageModal">
   <div class="modal-overlay" onclick="window.closeManage()"></div>

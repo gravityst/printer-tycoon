@@ -2546,24 +2546,59 @@ function renderOrders() {
 function renderInventory() {
   const root = document.getElementById('inventory');
   root.innerHTML = '';
-  const buyable = ['pla', 'pla-plus', 'petg', 'tpu-95a', 'abs', 'asa', 'pc', 'nylon-pa12', 'pa-cf', 'resin-standard', 'resin-tough', 'resin-castable'];
-  buyable.forEach(matId => {
-    const m = materialById(matId);
-    if (!m) return;
-    const stock = state.inventory[matId] || 0;
-    const unitCost = m.costPerKg ?? m.costPerLiter ?? 0;
-    const unit = m.category === 'resin' ? 'L' : 'kg';
-    const canAfford = state.money >= unitCost;
-    const el = document.createElement('div');
-    el.className = 'mat-card';
-    el.innerHTML = `
-      <div class="mat-info">
-        <div class="mat-name">${m.name}</div>
-        <div class="mat-stock">${stock.toFixed(0)}g · $${unitCost}/${unit}</div>
-      </div>
-      <button class="mat-buy" onclick="window.buyMaterial('${matId}', 1)" ${canAfford ? '' : 'disabled'}>Buy 1${unit}</button>
-    `;
-    root.appendChild(el);
+
+  // Group materials by category
+  const groups = { filament: [], resin: [], powder: [], fiber: [] };
+  materialsCat.forEach(m => {
+    if (groups[m.category]) groups[m.category].push(m);
+  });
+  // Sort each group: stock first (so what you have is on top), then by price
+  Object.keys(groups).forEach(k => {
+    groups[k].sort((a, b) => {
+      const sa = state.inventory[a.id] || 0;
+      const sb = state.inventory[b.id] || 0;
+      if ((sa > 0) !== (sb > 0)) return sa > 0 ? -1 : 1;
+      return (a.costPerKg ?? a.costPerLiter ?? 0) - (b.costPerKg ?? b.costPerLiter ?? 0);
+    });
+  });
+
+  const catLabel = { filament: 'FILAMENT', resin: 'RESIN', powder: 'POWDER', fiber: 'FIBER / METAL' };
+  const catOrder = ['filament', 'resin', 'powder', 'fiber'];
+
+  catOrder.forEach(cat => {
+    const items = groups[cat];
+    if (!items || items.length === 0) return;
+    const hdr = document.createElement('div');
+    hdr.className = 'inv-cat-header';
+    hdr.innerHTML = `<span>${catLabel[cat]}</span> <span class="inv-cat-count">${items.length}</span>`;
+    root.appendChild(hdr);
+
+    items.forEach(m => {
+      const stock = state.inventory[m.id] || 0;
+      const unitCost = m.costPerKg ?? m.costPerLiter ?? 0;
+      const unit = m.costPerLiter ? 'L' : 'kg';
+      const canAfford = state.money >= unitCost;
+      // How many of the player's printers can use this material
+      const compatCount = state.printers.filter(slot => {
+        const printer = printerById(slot.printerId);
+        return printer && printer.materials.includes(m.id);
+      }).length;
+      const el = document.createElement('div');
+      el.className = 'mat-card' + (stock > 0 ? ' has-stock' : '') + (compatCount === 0 ? ' incompat' : '');
+      el.innerHTML = `
+        <div class="mat-info">
+          <div class="mat-name">
+            ${m.name}
+            ${compatCount === 0 ? '<span class="incompat-tag" title="No owned printer supports this material">N/A</span>' : ''}
+          </div>
+          <div class="mat-stock">
+            ${stock > 0 ? `<strong class="stock-yes">${stock.toFixed(0)}g</strong> · ` : ''}<span class="mat-price">$${unitCost}/${unit}</span>
+          </div>
+        </div>
+        <button class="mat-buy" onclick="window.buyMaterial('${m.id}', 1)" ${canAfford ? '' : 'disabled'}>Buy 1${unit}</button>
+      `;
+      root.appendChild(el);
+    });
   });
 }
 
