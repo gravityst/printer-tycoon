@@ -5,7 +5,7 @@
 const STATE_KEY = 'printer-tycoon-state-v4';
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
-const ORDER_SPAWN_BASE_HOURS = 12;
+const ORDER_SPAWN_BASE_HOURS = 24;
 
 // Nozzle catalog: size (mm) × hardness. Each slot has one installed at a time.
 // Real-world tradeoff: smaller = finer detail but slow; bigger = fast but coarse.
@@ -217,7 +217,7 @@ function defaultState() {
     printers: [makeSlot(STARTING_PRINTER, 1)],
     inventory: { [STARTING_FILAMENT_ID]: STARTING_FILAMENT_GRAMS },
     orders: [],
-    nextOrderInHours: 0.5,
+    nextOrderInHours: 3,
     nextOrderId: 1,
     nextSlotId: 2,
   };
@@ -1029,9 +1029,9 @@ function tick() {
   state.nextOrderInHours -= gameHours;
   if (state.nextOrderInHours <= 0) {
     spawnOrder();
-    const repBoost = 1 + state.reputation * 0.02;
-    const printerBoost = 1 + (state.printers.length - 1) * 0.15;
-    state.nextOrderInHours = ORDER_SPAWN_BASE_HOURS / (repBoost * printerBoost) * (0.6 + Math.random() * 0.8);
+    const repBoost = 1 + state.reputation * 0.01;
+    const printerBoost = 1 + (state.printers.length - 1) * 0.10;
+    state.nextOrderInHours = ORDER_SPAWN_BASE_HOURS / (repBoost * printerBoost) * (0.7 + Math.random() * 0.8);
   }
 
   render();
@@ -2311,14 +2311,11 @@ function animateScene(info, slot) {
       const carriageTargetY = surfaceY + 1.0;  // visual offset for the nozzle
       carriage.position.y = Math.min(Math.max(carriageTargetY, minY), maxY);
 
-      // Head moves along the rail (X-axis)
+      // Head moves along the rail (X-axis only). Z stays locked so the
+      // head never visibly leaves the gantry — wandering Z made it look
+      // like the head was floating off the rail. Bed/Y motion is faked.
       head.position.x = Math.sin(t * 1.3) * (halfSize * 0.9);
-      // For cube printers, head also moves Y (CoreXY); for cantilever, the bed moves Y so head Z stays fixed
-      if (isCanti) {
-        head.position.z = -1.0;
-      } else {
-        head.position.z = Math.sin(t * 0.7) * (halfSize * 0.9);
-      }
+      head.position.z = isCanti ? -1.0 : 0;
     } else {
       carriage.position.y = minY;
       head.position.x = 0;

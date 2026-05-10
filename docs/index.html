@@ -2,35 +2,60 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Printer Tycoon</title>
+<title>Print3D</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
+  :root {
+    --bg-base: #08080c;
+    --bg-panel: #14141b;
+    --bg-card: #1a1a23;
+    --bg-card-hover: #20202a;
+    --bg-input: #0e0e14;
+    --text-primary: #e5e7eb;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+    --border: #2a2a35;
+    --border-strong: #3a3a47;
+    --accent: #ef4444;
+    --accent-bright: #dc2626;
+    --accent-dim: #7f1d1d;
+    --accent-glow: rgba(239,68,68,0.35);
+    --good: #10b981;
+    --warn: #fbbf24;
+    --bad: #ef4444;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #f0f2f5; color: #1a1a1a;
+    background: var(--bg-base); color: var(--text-primary);
     min-height: 100vh;
   }
 
   header {
-    background: #1a1a1a; color: #fff;
+    background: linear-gradient(180deg, #1a1a23 0%, #14141b 100%);
+    color: var(--text-primary);
     padding: 14px 24px;
     display: flex; align-items: center; gap: 32px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.5);
   }
-  header .brand { font-weight: 800; font-size: 20px; letter-spacing: -0.5px; }
+  header .brand {
+    font-weight: 900; font-size: 22px; letter-spacing: -0.8px;
+    color: var(--accent);
+    text-shadow: 0 0 20px var(--accent-glow);
+  }
   header .stats { display: flex; gap: 24px; margin-left: auto; font-size: 14px; font-weight: 600; }
-  header .stat-label { color: #888; font-weight: 500; margin-right: 6px; }
-  header .stat-money { color: #4ade80; }
-  header .stat-rep { color: #fbbf24; }
+  header .stat-label { color: var(--text-muted); font-weight: 500; margin-right: 6px; }
+  header .stat-money { color: var(--good); }
+  header .stat-rep { color: var(--warn); }
   header .controls { display: flex; gap: 8px; }
   header button {
-    background: #2a2a2a; color: #fff; border: 1px solid #3a3a3a;
+    background: #1f1f29; color: var(--text-primary); border: 1px solid var(--border);
     padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
     cursor: pointer; font-family: inherit;
   }
-  header button:hover { background: #3a3a3a; }
-  header button.danger { color: #f87171; }
+  header button:hover { background: #2a2a35; border-color: var(--border-strong); }
+  header button.danger { color: var(--accent); }
 
   main {
     display: grid;
@@ -40,48 +65,49 @@
     max-width: 1600px; margin: 0 auto;
   }
   section {
-    background: #fff;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 16px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
   }
   section h2 {
     font-size: 13px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 1px; color: #888; margin-bottom: 12px;
+    letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 12px;
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px;
   }
-  section h2 .count { font-size: 11px; color: #aaa; font-weight: 500; }
+  section h2 .count { font-size: 11px; color: var(--text-muted); font-weight: 500; }
   .shop-btn {
-    background: #4ade80; color: #052e16; border: none;
+    background: var(--accent); color: white; border: none;
     padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 700;
     cursor: pointer; font-family: inherit; letter-spacing: 0.5px;
-    text-transform: uppercase;
+    text-transform: uppercase; box-shadow: 0 0 12px var(--accent-glow);
   }
-  .shop-btn:hover { background: #22c55e; }
+  .shop-btn:hover { background: var(--accent-bright); }
 
   /* ---- Printer card ---- */
   .printer-card {
-    border: 1px solid #e5e7eb; border-radius: 10px;
+    border: 1px solid var(--border); border-radius: 10px;
     margin-bottom: 12px;
     overflow: hidden;
-    background: #fff;
+    background: var(--bg-card);
   }
-  .printer-card.printing { border-color: #fcd34d; box-shadow: 0 0 0 2px rgba(252,211,77,0.3); }
+  .printer-card.printing { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
   .printer-canvas {
     display: block;
     width: 100%;
     aspect-ratio: 4 / 3;
-    background: linear-gradient(180deg, #e0e7ff 0%, #f3f4f6 70%, #d1d5db 100%);
-    border-bottom: 1px solid #e5e7eb;
+    background: linear-gradient(180deg, #1a1a23 0%, #14141b 70%, #08080c 100%);
+    border-bottom: 1px solid var(--border);
   }
   .printer-info { padding: 12px 14px; }
   .printer-name {
     font-size: 15px; line-height: 1.3;
     display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
   }
-  .printer-name .brand { color: #6b7280; font-weight: 500; font-size: 13px; }
-  .printer-name strong { font-weight: 700; color: #111; }
+  .printer-name .brand { color: var(--text-secondary); font-weight: 500; font-size: 13px; }
+  .printer-name strong { font-weight: 700; color: var(--text-primary); }
   .printer-tier {
     display: inline-block; font-size: 9px; font-weight: 700;
     padding: 2px 6px; border-radius: 4px; text-transform: uppercase;
@@ -94,33 +120,34 @@
   .printer-tier.industrial { background: #ddd6fe; color: #6d28d9; }
   .printer-tier.endgame { background: #1a1a1a; color: #fbbf24; }
 
-  .printer-specs { font-size: 11px; color: #6b7280; margin-top: 4px; }
-  .printer-status { margin-top: 8px; font-size: 13px; color: #1a1a1a; }
-  .printer-status.idle { color: #9ca3af; font-style: italic; }
+  .printer-specs { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+  .printer-status { margin-top: 8px; font-size: 13px; color: var(--text-primary); }
+  .printer-status.idle { color: var(--text-muted); font-style: italic; }
   .progress {
     margin-top: 8px;
-    height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden;
+    height: 8px; background: #0a0a10; border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
   }
-  .progress .fill { height: 100%; background: linear-gradient(90deg, #4ade80, #22c55e); transition: width 0.3s; }
-  .job-info { font-size: 12px; color: #555; margin-top: 6px; display: flex; justify-content: space-between; }
+  .progress .fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-bright)); transition: width 0.3s; box-shadow: 0 0 8px var(--accent-glow); }
+  .job-info { font-size: 12px; color: var(--text-secondary); margin-top: 6px; display: flex; justify-content: space-between; }
 
   .printer-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
   .meta-pill {
     font-size: 10px; font-weight: 600;
     padding: 2px 8px; border-radius: 999px;
-    background: #f3f4f6; color: #475569;
+    background: #0e0e14; color: var(--text-secondary);
+    border: 1px solid var(--border);
   }
-  .meta-pill .hardened { color: #b91c1c; font-weight: 700; }
-  .meta-pill.resale { background: #ecfdf5; color: #047857; }
+  .meta-pill .hardened { color: var(--accent); font-weight: 700; }
+  .meta-pill.resale { background: rgba(16,185,129,0.12); color: var(--good); border-color: rgba(16,185,129,0.3); }
 
   .printer-actions { margin-top: 10px; display: flex; gap: 6px; }
   .printer-manage-btn {
     flex: 1; padding: 7px 10px; font-size: 11px; font-weight: 700;
-    border: 1px solid #d1d5db; border-radius: 6px;
-    background: #fff; color: #1a1a1a; cursor: pointer; font-family: inherit;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input); color: var(--text-primary); cursor: pointer; font-family: inherit;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .printer-manage-btn:hover { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .printer-manage-btn:hover { background: var(--accent); color: white; border-color: var(--accent); }
 
   /* Manage modal — single printer detail + nozzle picker + sell */
   .manage-card {
@@ -307,39 +334,40 @@
 
   /* ---- Order card ---- */
   .order-card {
-    border: 1px solid #e5e7eb; border-radius: 10px;
+    border: 1px solid var(--border); border-radius: 10px;
     padding: 12px; margin-bottom: 10px;
-    background: #fafafa;
+    background: var(--bg-card);
     transition: background 0.15s;
   }
-  .order-card:hover { background: #f3f4f6; }
-  .order-name { font-weight: 700; font-size: 14px; }
+  .order-card:hover { background: var(--bg-card-hover); }
+  .order-name { font-weight: 700; font-size: 14px; color: var(--text-primary); }
   .order-cat {
     display: inline-block; font-size: 10px;
     padding: 2px 6px; border-radius: 4px;
-    background: #ede9fe; color: #6d28d9; margin-left: 6px; font-weight: 600;
+    background: rgba(168,85,247,0.18); color: #c4b5fd; margin-left: 6px; font-weight: 600;
+    border: 1px solid rgba(168,85,247,0.3);
   }
-  .order-spec { font-size: 12px; color: #666; margin-top: 3px; }
-  .order-pay { font-size: 13px; color: #16a34a; font-weight: 700; margin-top: 6px; }
+  .order-spec { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+  .order-pay { font-size: 13px; color: var(--good); font-weight: 700; margin-top: 6px; }
   .order-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .order-actions button {
     flex: 1; min-width: 0; padding: 8px 10px; font-size: 12px; font-weight: 600;
-    border: 1px solid #d1d5db; border-radius: 6px;
-    background: #fff; color: #1a1a1a; cursor: pointer; font-family: inherit;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input); color: var(--text-primary); cursor: pointer; font-family: inherit;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .order-actions button:hover:not(:disabled) { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .order-actions button:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
   .order-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
-  .order-actions button.reject { color: #b91c1c; flex: 0 0 auto; padding: 8px 12px; }
-  .order-actions button.reject:hover:not(:disabled) { background: #b91c1c; color: #fff; border-color: #b91c1c; }
-  .order-deadline { font-size: 11px; color: #888; margin-top: 4px; }
-  .order-deadline.urgent { color: #b91c1c; font-weight: 600; }
+  .order-actions button.reject { color: var(--accent); flex: 0 0 auto; padding: 8px 12px; }
+  .order-actions button.reject:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
+  .order-deadline { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+  .order-deadline.urgent { color: var(--accent); font-weight: 600; }
   .order-reason {
     margin-top: 8px;
     padding: 6px 10px;
-    background: #fef2f2;
-    color: #991b1b;
-    border: 1px solid #fecaca;
+    background: rgba(239,68,68,0.10);
+    color: #fca5a5;
+    border: 1px solid rgba(239,68,68,0.3);
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
@@ -351,9 +379,9 @@
   }
   .reject-all-btn {
     padding: 6px 12px;
-    background: #fef2f2;
-    color: #991b1b;
-    border: 1px solid #fecaca;
+    background: rgba(239,68,68,0.10);
+    color: #fca5a5;
+    border: 1px solid rgba(239,68,68,0.3);
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
@@ -363,46 +391,47 @@
     letter-spacing: 0.5px;
   }
   .reject-all-btn:hover {
-    background: #b91c1c;
+    background: var(--accent);
     color: white;
-    border-color: #b91c1c;
+    border-color: var(--accent);
   }
 
   /* ---- Material card ---- */
   .mat-card {
-    border: 1px solid #e5e7eb; border-radius: 8px;
+    border: 1px solid var(--border); border-radius: 8px;
     padding: 10px 12px; margin-bottom: 8px;
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px;
-    background: #fafafa;
+    background: var(--bg-card);
   }
   .mat-info { flex: 1; min-width: 0; }
-  .mat-name { font-weight: 600; font-size: 13px; }
-  .mat-stock { font-size: 11px; color: #888; }
+  .mat-name { font-weight: 600; font-size: 13px; color: var(--text-primary); }
+  .mat-stock { font-size: 11px; color: var(--text-muted); }
   .mat-buy {
     padding: 6px 10px; font-size: 11px; font-weight: 600;
-    border: 1px solid #d1d5db; border-radius: 5px;
-    background: #fff; color: #1a1a1a; cursor: pointer; font-family: inherit;
+    border: 1px solid var(--border); border-radius: 5px;
+    background: var(--bg-input); color: var(--text-primary); cursor: pointer; font-family: inherit;
     flex-shrink: 0;
   }
-  .mat-buy:hover:not(:disabled) { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .mat-buy:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
   .mat-buy:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .empty { color: #aaa; font-size: 13px; font-style: italic; padding: 16px 0; text-align: center; }
+  .empty { color: var(--text-muted); font-size: 13px; font-style: italic; padding: 16px 0; text-align: center; }
 
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-    background: #1a1a1a; color: #fff;
+    background: var(--bg-card); color: var(--text-primary);
+    border: 1px solid var(--border);
     padding: 10px 20px; border-radius: 8px;
     font-size: 13px; font-weight: 600;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
     z-index: 100;
     opacity: 0; pointer-events: none;
     transition: opacity 0.2s, transform 0.2s;
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(-8px); }
-  .toast.success { background: #16a34a; }
-  .toast.error { background: #b91c1c; }
+  .toast.success { background: var(--good); color: #052e16; border-color: var(--good); }
+  .toast.error { background: var(--accent); color: white; border-color: var(--accent); }
 
   /* ---- Shop modal: simple LIST view ---- */
   .modal {
@@ -418,45 +447,46 @@
   .modal-card {
     position: absolute;
     inset: 4% 5%;
-    background: #f8fafc; border-radius: 16px;
+    background: var(--bg-base); border-radius: 16px;
     display: flex; flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 30px 80px rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.7);
   }
   @media (max-width: 768px) {
     .modal-card { inset: 0; border-radius: 0; }
   }
   .modal-header {
     padding: 16px 24px;
-    background: #fff;
-    border-bottom: 1px solid #e5e7eb;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
     display: flex; align-items: center; gap: 16px;
   }
-  .modal-header h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
-  .modal-header .subtitle { font-size: 12px; color: #888; margin-top: 2px; font-weight: 500; }
+  .modal-header h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); }
+  .modal-header .subtitle { font-size: 12px; color: var(--text-muted); margin-top: 2px; font-weight: 500; }
   .modal-header .close {
     margin-left: auto;
     width: 36px; height: 36px;
-    border-radius: 50%; border: none;
-    background: #f3f4f6; color: #666;
+    border-radius: 50%; border: 1px solid var(--border);
+    background: var(--bg-input); color: var(--text-secondary);
     font-size: 22px; line-height: 1; cursor: pointer; font-family: inherit;
     font-weight: 400;
   }
-  .modal-header .close:hover { background: #e5e7eb; color: #111; }
+  .modal-header .close:hover { background: var(--accent); color: white; border-color: var(--accent); }
 
   .shop-filters {
-    padding: 12px 24px; background: #fff;
-    border-bottom: 1px solid #e5e7eb;
+    padding: 12px 24px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
     display: flex; gap: 6px; flex-wrap: wrap;
   }
   .shop-filters button {
     padding: 6px 14px; font-size: 12px; font-weight: 600;
-    background: #f3f4f6; color: #555; border: 1px solid transparent;
+    background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border);
     border-radius: 999px; cursor: pointer; font-family: inherit;
     text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .shop-filters button:hover { background: #e5e7eb; }
-  .shop-filters button.active { background: #1a1a1a; color: #fff; }
+  .shop-filters button:hover { background: var(--bg-card); color: var(--text-primary); }
+  .shop-filters button.active { background: var(--accent); color: white; border-color: var(--accent); }
 
   .shop-list {
     flex: 1; overflow-y: auto;
@@ -465,8 +495,8 @@
   }
 
   .shop-row {
-    background: #fff;
-    border: 1px solid #e5e7eb; border-radius: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border); border-radius: 12px;
     padding: 14px 18px;
     display: grid;
     grid-template-columns: 56px 1fr auto;
@@ -474,8 +504,8 @@
     gap: 16px;
     transition: border-color 0.15s, box-shadow 0.15s;
   }
-  .shop-row:hover { border-color: #4ade80; box-shadow: 0 4px 14px rgba(0,0,0,0.06); }
-  .shop-row.locked { opacity: 0.55; }
+  .shop-row:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+  .shop-row.locked { opacity: 0.5; }
 
   .shop-icon {
     width: 56px; height: 56px;
@@ -504,24 +534,25 @@
     margin-bottom: 4px;
   }
   .shop-row-line1 .brand {
-    font-size: 11px; font-weight: 700; color: #6b7280;
+    font-size: 11px; font-weight: 700; color: var(--text-muted);
     text-transform: uppercase; letter-spacing: 1px;
   }
   .shop-row-line1 .model {
-    font-size: 17px; font-weight: 800; color: #111;
+    font-size: 17px; font-weight: 800; color: var(--text-primary);
     letter-spacing: -0.3px;
   }
   .shop-row-line2 {
-    font-size: 12px; color: #6b7280; line-height: 1.4;
+    font-size: 12px; color: var(--text-secondary); line-height: 1.4;
   }
-  .shop-row-line2 .sep { color: #d1d5db; margin: 0 6px; }
+  .shop-row-line2 .sep { color: var(--border-strong); margin: 0 6px; }
   .shop-row-line3 {
     margin-top: 6px;
     display: flex; gap: 4px; flex-wrap: wrap;
   }
   .mat-pill {
     font-size: 10px; font-weight: 600; padding: 2px 6px;
-    background: #f3f4f6; color: #555; border-radius: 4px;
+    background: var(--bg-input); color: var(--text-secondary); border-radius: 4px;
+    border: 1px solid var(--border);
   }
 
   .shop-row-action {
@@ -529,17 +560,17 @@
     flex-shrink: 0;
     min-width: 130px;
   }
-  .shop-price { font-size: 20px; font-weight: 800; color: #111; line-height: 1; }
-  .shop-price .currency { font-size: 13px; color: #6b7280; font-weight: 600; }
+  .shop-price { font-size: 20px; font-weight: 800; color: var(--text-primary); line-height: 1; }
+  .shop-price .currency { font-size: 13px; color: var(--text-muted); font-weight: 600; }
   .shop-buy {
     padding: 8px 18px; font-size: 12px; font-weight: 700;
-    background: #1a1a1a; color: #fff; border: none; border-radius: 6px;
+    background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px;
     cursor: pointer; font-family: inherit; text-transform: uppercase; letter-spacing: 0.5px;
   }
-  .shop-buy:hover:not(:disabled) { background: #4ade80; color: #052e16; }
-  .shop-buy:disabled { background: #e5e7eb; color: #9ca3af; cursor: not-allowed; }
-  .shop-buy.affordable { background: #4ade80; color: #052e16; }
-  .shop-buy.affordable:hover { background: #22c55e; }
+  .shop-buy:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
+  .shop-buy:disabled { background: var(--bg-input); color: var(--text-muted); cursor: not-allowed; opacity: 0.5; }
+  .shop-buy.affordable { background: var(--accent); color: white; border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+  .shop-buy.affordable:hover { background: var(--accent-bright); }
 
   @media (max-width: 1024px) {
     main { grid-template-columns: 1fr; }
@@ -571,7 +602,7 @@
 </head>
 <body>
 <header>
-  <div class="brand">Printer Tycoon</div>
+  <div class="brand">Print3D</div>
   <div class="stats">
     <div><span class="stat-label">Cash</span><span class="stat-money">$<span id="money">0</span></span></div>
     <div><span class="stat-label">Day</span><span id="day">1</span> · <span id="hour">08:00</span></div>
