@@ -2518,7 +2518,10 @@ function renderOrders() {
     });
     actions += `<button class="reject" onclick="window.rejectOrder(${order.id})" title="Decline">Decline</button>`;
 
-    // Order-level "why can't I print this?" summary
+    // Order-level "why can't I print this?" summary.
+    // Pick the EASIEST-TO-FIX reason — if one printer can do it but is just
+    // short on filament, that's far more actionable than "no SLS printer
+    // exists" from the other three.
     let reasonHtml = '';
     if (!anyOk) {
       const nonBusy = checks.filter(c => c.reason !== 'busy');
@@ -2527,14 +2530,15 @@ function renderOrders() {
       if (allBusy) {
         reason = 'All printers busy';
       } else {
-        // Pick the most "actionable" reason — prefer hardened/material/tech hints
-        const priority = ['hardened', 'tech', 'material', 'volume', 'precision', 'need '];
-        let pick = nonBusy[0];
+        // Priority: cheapest fix first. "Need Xg" = just buy more material.
+        // "needs hardened" = swap nozzle. "Wrong material/tech" = buy a printer.
+        const priority = ['need ', 'hardened', 'precision', 'volume', 'material', 'tech'];
+        let pick = null;
         for (const p of priority) {
           const m = nonBusy.find(c => c.reason && c.reason.toLowerCase().includes(p));
           if (m) { pick = m; break; }
         }
-        reason = pick.reason;
+        reason = (pick || nonBusy[0]).reason;
       }
       reasonHtml = `<div class="order-reason">✗ ${reason}</div>`;
     }
