@@ -5,7 +5,7 @@
 const STATE_KEY = 'printer-tycoon-state-v4';
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
-const ORDER_SPAWN_BASE_HOURS = 24;
+const ORDER_SPAWN_BASE_HOURS = 60;
 
 // Nozzle catalog: size (mm) × hardness. Each slot has one installed at a time.
 // Real-world tradeoff: smaller = finer detail but slow; bigger = fast but coarse.
@@ -217,7 +217,7 @@ function defaultState() {
     printers: [makeSlot(STARTING_PRINTER, 1)],
     inventory: { [STARTING_FILAMENT_ID]: STARTING_FILAMENT_GRAMS },
     orders: [],
-    nextOrderInHours: 3,
+    nextOrderInHours: 5,
     nextOrderId: 1,
     nextSlotId: 2,
   };
@@ -646,51 +646,84 @@ function buyFilament(idx) {
   renderSupplies();
 }
 
+// Simple shop: ONE row per material (no brand/color clutter).
+// Each row shows category badge, name, price, and how many of YOUR
+// printers can use it.
+const CAT_COLORS = {
+  filament: { bg: '#1e3a5f', fg: '#93c5fd', label: 'FILAMENT' },
+  resin:    { bg: '#3b1e5e', fg: '#c4b5fd', label: 'RESIN' },
+  powder:   { bg: '#3a3a40', fg: '#d1d5db', label: 'POWDER' },
+  fiber:    { bg: '#1f2937', fg: '#fbbf24', label: 'FIBER' },
+};
+
 function renderSupplies() {
   const root = document.getElementById('suppliesList');
   if (!root) return;
-  let list = SUPPLIES_CATALOG.map((item, i) => ({ ...item, idx: i }));
-  const isPowder = i => i.material.startsWith('sls-') || i.material.startsWith('mjf-');
-  const isMetal = i => i.material.startsWith('metal-');
-  const isFiber = i => i.material.startsWith('fiber-') || i.material === 'onyx' || i.material === 'nylon-white';
+  let list = materialsCat.slice();
+  // Filter
   if (suppliesFilter !== 'all') {
-    if (suppliesFilter === 'filament') list = list.filter(i => i.costPerKg && !isPowder(i) && !isMetal(i) && !isFiber(i));
-    else if (suppliesFilter === 'resin') list = list.filter(i => i.costPerLiter);
-    else if (suppliesFilter === 'powder') list = list.filter(isPowder);
-    else if (suppliesFilter === 'metal') list = list.filter(isMetal);
-    else if (suppliesFilter === 'fiber') list = list.filter(isFiber);
-    else list = list.filter(i => i.material === suppliesFilter);
+    if (suppliesFilter === 'filament') list = list.filter(m => m.category === 'filament');
+    else if (suppliesFilter === 'resin') list = list.filter(m => m.category === 'resin');
+    else if (suppliesFilter === 'powder') list = list.filter(m => m.category === 'powder');
+    else if (suppliesFilter === 'fiber') list = list.filter(m => m.category === 'fiber');
+    else if (suppliesFilter === 'metal') list = list.filter(m => m.id.startsWith('metal-') || (m.category === 'powder' && m.tech === 'DMLS'));
   }
+  // Sort by category then by cost
+  const catOrder = { filament: 0, resin: 1, powder: 2, fiber: 3 };
+  list.sort((a, b) => {
+    const ca = catOrder[a.category] ?? 9;
+    const cb = catOrder[b.category] ?? 9;
+    if (ca !== cb) return ca - cb;
+    return (a.costPerKg ?? a.costPerLiter ?? 0) - (b.costPerKg ?? b.costPerLiter ?? 0);
+  });
+
   root.innerHTML = '';
-  list.forEach(item => {
-    const cost = item.costPerKg ?? item.costPerLiter ?? 0;
-    const unit = item.costPerLiter ? 'L' : 'kg';
+  list.forEach(m => {
+    const cost = m.costPerKg ?? m.costPerLiter ?? 0;
+    const unit = m.costPerLiter ? 'L' : 'kg';
     const canAfford = state.money >= cost;
-    const mat = materialById(item.material);
-    const matName = mat ? mat.name : item.material;
+    const stock = state.inventory[m.id] || 0;
+    const cat = CAT_COLORS[m.category] || CAT_COLORS.powder;
+    // Compatibility with the player's owned printers
+    const compatPrinters = state.printers.filter(slot => {
+      const printer = printerById(slot.printerId);
+      return printer && printer.materials.includes(m.id);
+    });
+    const compatTxt = compatPrinters.length > 0
+      ? `<span class="compat-good">✓ ${compatPrinters.length} of your ${state.printers.length} printer${state.printers.length === 1 ? '' : 's'} support this</span>`
+      : `<span class="compat-none">✗ none of your printers support this</span>`;
+    const noteShort = m.notes ? m.notes.split('.')[0].slice(0, 90) : '';
+
     const row = document.createElement('div');
-    row.className = 'supplies-row' + (canAfford ? '' : ' locked');
+    row.className = 'supplies-row simple' + (canAfford ? '' : ' locked');
     row.innerHTML = `
-      <div class="spool-thumb" style="background:${item.hex}"></div>
+      <div class="cat-badge" style="background:${cat.bg};color:${cat.fg}">${cat.label}</div>
       <div class="supplies-info">
-        <div class="supplies-line1">
-          <span class="brand">${item.brand}</span>
-          <span class="model">${item.name}</span>
-        </div>
-        <div class="supplies-line2">
-          <span class="color-chip" style="background:${item.hex}"></span>
-          <span class="color-name">${item.color}</span>
-          <span class="sep">·</span>
-          <span class="muted">${matName}</span>
-        </div>
+        <div class="supplies-line1"><span class="model">${m.name}</span></div>
+        <div class="supplies-line2 compat">${compatTxt}</div>
+        ${noteShort ? `<div class="supplies-line3 note">${noteShort}</div>` : ''}
+        <div class="supplies-stock">${stock.toFixed(0)}g in stock</div>
       </div>
       <div class="supplies-action">
         <div class="supplies-price">${fmtPrice(cost)}<span class="muted">/${unit}</span></div>
-        <button class="supplies-buy" onclick="window.buyFilament(${item.idx})" ${canAfford ? '' : 'disabled'}>${canAfford ? 'Buy' : 'Short'}</button>
+        <button class="supplies-buy ${canAfford ? 'affordable' : ''}" onclick="window.buyMaterialDirect('${m.id}')" ${canAfford ? '' : 'disabled'}>${canAfford ? 'Buy 1' + unit : 'Short'}</button>
       </div>
     `;
     root.appendChild(row);
   });
+}
+
+function buyMaterialDirect(matId) {
+  const m = materialById(matId);
+  if (!m) return;
+  const cost = m.costPerKg ?? m.costPerLiter ?? 0;
+  if (state.money < cost) { toast('Not enough cash', 'error'); return; }
+  state.money -= cost;
+  state.inventory[matId] = (state.inventory[matId] || 0) + 1000;
+  const unit = m.costPerLiter ? 'L' : 'kg';
+  toast(`Bought 1${unit} ${m.name}`, 'success');
+  render();
+  renderSupplies();
 }
 
 // =====================================================================
@@ -843,10 +876,28 @@ function renderManage() {
     `;
   }).join('');
 
+  // Compatible materials list — show all the materials this printer can run
+  const matsHtml = printer.materials.map(matId => {
+    const mat = materialById(matId);
+    if (!mat) return '';
+    const stock = state.inventory[matId] || 0;
+    const requiresHard = ABRASIVE_MATERIALS.has(matId);
+    const hardOK = !requiresHard || slot.nozzleHardened;
+    const cls = hardOK ? 'mat-chip ok' : 'mat-chip warn';
+    const tip = requiresHard
+      ? (slot.nozzleHardened ? `${mat.name} — needs hardened nozzle ✓` : `${mat.name} — needs hardened nozzle (current: brass)`)
+      : `${mat.name}`;
+    return `<span class="${cls}" title="${tip}">${mat.name}${stock > 0 ? ` <span class="stock-num">${stock.toFixed(0)}g</span>` : ''}${requiresHard && !slot.nozzleHardened ? ' ⚠' : ''}</span>`;
+  }).join('');
+
   document.getElementById('manageBody').innerHTML = `
     <div class="manage-section">
       <h3>Stats</h3>
       ${statsHtml}
+    </div>
+    <div class="manage-section">
+      <h3>Materials supported <span class="muted">— ${printer.materials.length} total</span></h3>
+      <div class="mat-chip-grid">${matsHtml}</div>
     </div>
     <div class="manage-section">
       <h3>Maintenance</h3>
@@ -925,7 +976,7 @@ async function generateShopThumbnails() {
     const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
     camera.position.set(7.5, 5.0, 8.5);
     camera.lookAt(0, 2.0, 0);
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0xe8eaef, roughness: 0.9 }));
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.7, metalness: 0.3 }));
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     scene.add(floor);
@@ -1153,10 +1204,10 @@ function createScene(canvas, printer) {
   camera.position.set(7.5, 5.0, 8.5);
   camera.lookAt(0, 2.0, 0);
 
-  // Floor / workshop ground
+  // Floor / workshop ground — brushed dark metal table
   const floorGeo = new THREE.PlaneGeometry(40, 40);
   const floorMat = new THREE.MeshStandardMaterial({
-    color: 0xe8eaef, roughness: 0.9, metalness: 0.0,
+    color: 0x1a1a22, roughness: 0.7, metalness: 0.3,
   });
   const floor = new THREE.Mesh(floorGeo, floorMat);
   floor.rotation.x = -Math.PI / 2;
@@ -2594,6 +2645,7 @@ window.openSupplies = openSupplies;
 window.closeSupplies = closeSupplies;
 window.setSuppliesFilter = setSuppliesFilter;
 window.buyFilament = buyFilament;
+window.buyMaterialDirect = buyMaterialDirect;
 
 async function waitForThree() {
   if (window.THREE) return;
