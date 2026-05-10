@@ -897,21 +897,30 @@ async function generateShopThumbnails() {
   renderer.setSize(W, H, false);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  const sharedEnv = getEnvTexture(renderer);
 
   for (const printer of printersCat) {
     if (shopThumbnails.has(printer.id)) continue;
     const scene = new THREE.Scene();
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.55));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    if (sharedEnv) scene.environment = sharedEnv;
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.42));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.1);
     sun.position.set(8, 14, 8);
     sun.castShadow = true;
     sun.shadow.mapSize.set(512, 512);
     sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 30;
     sun.shadow.camera.left = -10; sun.shadow.camera.right = 10;
     sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10;
+    sun.shadow.bias = -0.0008;
     scene.add(sun);
-    const fill = new THREE.DirectionalLight(0xa8d0ff, 0.4);
-    fill.position.set(-6, 5, -8);
+    const rim = new THREE.DirectionalLight(0xa8d0ff, 0.45);
+    rim.position.set(-5, 6, -10);
+    scene.add(rim);
+    const fill = new THREE.DirectionalLight(0xfff0e0, 0.25);
+    fill.position.set(2, 3, 12);
     scene.add(fill);
     const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
     camera.position.set(7.5, 5.0, 8.5);
@@ -1034,6 +1043,67 @@ function tick() {
 // =====================================================================
 
 const printerScenes = new Map(); // canvas → scene info
+let cachedEnvTexture = null;     // shared PBR environment (procedural studio)
+
+// Helper: create a RoundedBoxGeometry (or fall back to Box if addon missing)
+function rbox(w, h, d, segs = 4, radius = 0.04) {
+  const RBG = window.RoundedBoxGeometry;
+  if (RBG) return new RBG(w, h, d, segs, radius);
+  return new THREE.BoxGeometry(w, h, d);
+}
+
+// Procedural room environment for PBR reflections — gives every metallic
+// surface real specular highlights instead of looking matte and dead.
+function getEnvTexture(renderer) {
+  if (cachedEnvTexture) return cachedEnvTexture;
+  if (!window.RoomEnvironment || !window.THREE) return null;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const envScene = new window.RoomEnvironment(renderer);
+  cachedEnvTexture = pmrem.fromScene(envScene, 0.04).texture;
+  pmrem.dispose();
+  return cachedEnvTexture;
+}
+
+// Canvas-textured LCD screen — shows live readable content (brand, %, status)
+function makeLCDTexture(text1, text2, hue = 'green') {
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 144;
+  const ctx = cv.getContext('2d');
+  // Dark green-tinted background like a real touchscreen UI
+  const bg = hue === 'green' ? '#0a3a2a' : (hue === 'cyan' ? '#0c4a6e' : '#1f2937');
+  const fg = hue === 'green' ? '#22c55e' : (hue === 'cyan' ? '#22d3ee' : '#fbbf24');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  // Subtle scanline pattern
+  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+  for (let y = 0; y < cv.height; y += 3) ctx.fillRect(0, y, cv.width, 1);
+  // Header bar
+  ctx.fillStyle = fg;
+  ctx.fillRect(0, 0, cv.width, 4);
+  // Title
+  ctx.fillStyle = fg;
+  ctx.font = 'bold 26px ui-monospace, Menlo, monospace';
+  ctx.textBaseline = 'top';
+  ctx.fillText(text1, 16, 16);
+  // Subtitle
+  ctx.font = '18px ui-monospace, Menlo, monospace';
+  ctx.fillStyle = fg + 'cc';
+  ctx.fillText(text2, 16, 52);
+  // Progress bar at bottom
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(16, cv.height - 28, cv.width - 32, 12);
+  ctx.fillStyle = fg;
+  ctx.fillRect(16, cv.height - 28, (cv.width - 32) * 0.6, 12);
+  // Footer text
+  ctx.font = '14px ui-monospace, Menlo, monospace';
+  ctx.fillStyle = fg + '99';
+  ctx.fillText('PRINTING', 16, cv.height - 14);
+  ctx.fillText('60%', cv.width - 50, cv.height - 14);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 function createScene(canvas, printer) {
   const THREE = window.THREE;
@@ -1043,15 +1113,20 @@ function createScene(canvas, printer) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.localClippingEnabled = true;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
-
-  // Sky-ish gradient via fog + clear
   scene.background = null;
 
-  // Lighting — warm fill + cool key
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.55));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+  // PBR environment — gives all metallic/glossy parts proper specular reflections
+  const env = getEnvTexture(renderer);
+  if (env) scene.environment = env;
+
+  // Lighting — warm key + cool rim + soft fill
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.42));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.1);
   sun.position.set(8, 14, 8);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
@@ -1061,10 +1136,15 @@ function createScene(canvas, printer) {
   sun.shadow.camera.right = 10;
   sun.shadow.camera.top = 10;
   sun.shadow.camera.bottom = -10;
+  sun.shadow.bias = -0.0008;
   scene.add(sun);
-
-  const fill = new THREE.DirectionalLight(0xa8d0ff, 0.4);
-  fill.position.set(-6, 5, -8);
+  // Rim light from behind for edge definition
+  const rim = new THREE.DirectionalLight(0xa8d0ff, 0.45);
+  rim.position.set(-5, 6, -10);
+  scene.add(rim);
+  // Soft front fill
+  const fill = new THREE.DirectionalLight(0xfff0e0, 0.25);
+  fill.position.set(2, 3, 12);
   scene.add(fill);
 
   // Camera at 3/4 view, slightly closer for clearer printer detail
@@ -1177,9 +1257,13 @@ function buildFDM3D(printer) {
   const tubeMat = new THREE.MeshStandardMaterial({ color: 0xfafafa, roughness: 0.5 });
   const knobMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.7 });
 
-  // ---- ELECTRONICS BASE ----
-  const baseMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.5, metalness: 0.4 });
-  const base = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.6, 4.2), baseMat);
+  // ---- ELECTRONICS BASE (clearcoat painted plastic) ----
+  const baseMat = new THREE.MeshPhysicalMaterial({
+    color: 0x111827, roughness: 0.4, metalness: 0.2,
+    clearcoat: 0.6, clearcoatRoughness: 0.18,
+    envMapIntensity: 1.0
+  });
+  const base = new THREE.Mesh(rbox(5.5, 0.6, 4.2, 4, 0.06), baseMat);
   base.position.set(0, 0.3, 0);
   base.castShadow = true;
   base.receiveShadow = true;
@@ -1222,15 +1306,21 @@ function buildFDM3D(printer) {
   }
 
   // ---- HEATED BED + PEI + LEVELING WHEELS ----
-  const bedMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.55, metalness: 0.4 });
-  const bed = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.10, 4.0), bedMat);
+  const bedMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0f172a, roughness: 0.45, metalness: 0.5,
+    envMapIntensity: 0.9
+  });
+  const bed = new THREE.Mesh(rbox(4.0, 0.10, 4.0, 3, 0.03), bedMat);
   bed.position.set(0, 0.77, 0);
   bed.castShadow = true;
   bed.receiveShadow = true;
   group.add(bed);
-  // PEI textured surface
-  const peiMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.85, metalness: 0.2 });
-  const pei = new THREE.Mesh(new THREE.BoxGeometry(3.95, 0.04, 3.95), peiMat);
+  // PEI textured spring steel surface — slight metallic sheen
+  const peiMat = new THREE.MeshPhysicalMaterial({
+    color: 0x1e293b, roughness: 0.65, metalness: 0.55,
+    envMapIntensity: 0.8
+  });
+  const pei = new THREE.Mesh(rbox(3.95, 0.04, 3.95, 2, 0.02), peiMat);
   pei.position.set(0, 0.84, 0);
   pei.receiveShadow = true;
   group.add(pei);
@@ -1383,8 +1473,12 @@ function buildFDM3D(printer) {
     headGroup.add(gusset);
   }
 
-  // 3. Head shroud (accent-colored)
-  const headBody = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.62, 0.50), headMat);
+  // 3. Head shroud (accent-colored, clearcoat painted plastic)
+  const headShellMat = new THREE.MeshPhysicalMaterial({
+    color: accentColor, roughness: 0.35, metalness: 0.15,
+    clearcoat: 0.7, clearcoatRoughness: 0.15
+  });
+  const headBody = new THREE.Mesh(rbox(0.78, 0.62, 0.50, 3, 0.04), headShellMat);
   headBody.position.set(0, -0.22, bodyLocZ);
   headBody.castShadow = true;
   headGroup.add(headBody);
@@ -1479,12 +1573,20 @@ function buildFDM3D(printer) {
   armV.position.set(0, spoolY - 0.5, spoolZ);
   group.add(armV);
 
-  // ---- LCD on the electronics base, front face ----
+  // ---- LCD on the electronics base — live canvas-textured screen ----
+  const lcdHue = printer.brand === 'Bambu Lab' ? 'green' :
+                 printer.brand === 'Prusa Research' ? 'amber' : 'cyan';
+  const lcdTex = makeLCDTexture(printer.brand.toUpperCase().slice(0, 8), printer.model.slice(0, 12), lcdHue);
+  const lcdBezel = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4, metalness: 0.3 });
+  const bezel = new THREE.Mesh(rbox(1.45, 0.62, 0.05, 2, 0.02), lcdBezel);
+  bezel.position.set(0.7, 0.45, 2.10);
+  group.add(bezel);
   const lcdMat = new THREE.MeshStandardMaterial({
-    color: 0x064e3b, emissive: 0x22d3ee, emissiveIntensity: 0.55, roughness: 0.2
+    map: lcdTex, emissive: 0xffffff, emissiveMap: lcdTex,
+    emissiveIntensity: 0.85, roughness: 0.2, metalness: 0.0
   });
-  const lcd = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 0.06), lcdMat);
-  lcd.position.set(0.7, 0.45, 2.13);
+  const lcd = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.5), lcdMat);
+  lcd.position.set(0.7, 0.45, 2.135);
   group.add(lcd);
   // Knob next to LCD
   const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.08, 24), knobMat);
@@ -1501,36 +1603,45 @@ function buildFDM3D(printer) {
 
   // ---- Solid enclosure shell with glass front door (cube/CoreXY only) ----
   if (printer.enclosed && !isCantilever) {
-    // Outer panels — brand frame color so each printer reads as its identity
-    const shellMat = new THREE.MeshStandardMaterial({
-      color: frameColor, roughness: 0.45, metalness: 0.35
+    // Outer panels — clearcoat painted plastic for that premium-printer look
+    const shellMat = new THREE.MeshPhysicalMaterial({
+      color: frameColor, roughness: 0.32, metalness: 0.18,
+      clearcoat: 0.65, clearcoatRoughness: 0.12,
+      envMapIntensity: 1.0
     });
     const wallY = postH/2 + 0.6;
     const wallH = postH - 0.1;
     // Back wall
-    const back = new THREE.Mesh(new THREE.BoxGeometry(4.5, wallH, 0.06), shellMat);
+    const back = new THREE.Mesh(rbox(4.5, wallH, 0.06, 2, 0.02), shellMat);
     back.position.set(0, wallY, -1.93);
     back.castShadow = true;
     back.receiveShadow = true;
     group.add(back);
     // Left + right walls
-    const sideGeo = new THREE.BoxGeometry(0.06, wallH, 3.78);
-    const leftW = new THREE.Mesh(sideGeo, shellMat);
+    const leftW = new THREE.Mesh(rbox(0.06, wallH, 3.78, 2, 0.02), shellMat);
     leftW.position.set(-2.27, wallY, 0);
     leftW.castShadow = true;
     leftW.receiveShadow = true;
     group.add(leftW);
-    const rightW = new THREE.Mesh(sideGeo, shellMat);
+    const rightW = new THREE.Mesh(rbox(0.06, wallH, 3.78, 2, 0.02), shellMat);
     rightW.position.set(2.27, wallY, 0);
     rightW.castShadow = true;
     rightW.receiveShadow = true;
     group.add(rightW);
-    // Top panel (slight inset so the corner posts are still visible)
-    const topPanel = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.08, 3.78), shellMat);
+    // Top panel (rounded edges)
+    const topPanel = new THREE.Mesh(rbox(4.5, 0.08, 3.78, 3, 0.03), shellMat);
     topPanel.position.set(0, postH + 0.55, 0);
     topPanel.castShadow = true;
     topPanel.receiveShadow = true;
     group.add(topPanel);
+    // Visible bolt heads at panel corners (4 small chrome cylinders on the back)
+    const boltMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.25, metalness: 0.95 });
+    [[-2.0, 1.0, -1.96], [2.0, 1.0, -1.96], [-2.0, postH+0.1, -1.96], [2.0, postH+0.1, -1.96]].forEach(([x, y, z]) => {
+      const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8), boltMat);
+      bolt.rotation.x = Math.PI / 2;
+      bolt.position.set(x, y, z);
+      group.add(bolt);
+    });
     // Brand-color accent strip along the top front edge (Bambu green, BCN3D teal, Markforged gold, etc.)
     const accentStripMat = new THREE.MeshStandardMaterial({
       color: accentColor, emissive: accentColor, emissiveIntensity: 0.3, roughness: 0.4
