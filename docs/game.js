@@ -5,7 +5,7 @@
 const STATE_KEY = 'printer-tycoon-state-v4';
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
-const ORDER_SPAWN_BASE_HOURS = 60;
+const ORDER_SPAWN_BASE_HOURS = 45;
 
 // Nozzle catalog: size (mm) × hardness. Each slot has one installed at a time.
 // Real-world tradeoff: smaller = finer detail but slow; bigger = fast but coarse.
