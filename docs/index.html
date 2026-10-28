@@ -56,6 +56,11 @@
   }
   header button:hover { background: #2a2a35; border-color: var(--border-strong); }
   header button.danger { color: var(--accent); }
+  header button.collect-all { background: var(--good); color: #052e16; border-color: var(--good); font-weight: 800; }
+  header button.collect-all:hover { background: #34d399; border-color: #34d399; }
+  header .stat-hum { color: #7dd3fc; }
+  header .finishing-note { font-size: 12px; color: var(--text-secondary); font-weight: 600; align-self: center; }
+  header .save-note { font-size: 11px; color: #3b2500; background: var(--warn); border-radius: 4px; padding: 2px 6px; font-weight: 800; align-self: center; }
 
   main {
     display: grid;
@@ -94,6 +99,8 @@
     background: var(--bg-card);
   }
   .printer-card.printing { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+  .printer-card.attention { border-color: var(--good); box-shadow: 0 0 0 2px rgba(16,185,129,0.25); }
+  .printer-card.fault { border-color: var(--warn); box-shadow: 0 0 0 2px rgba(251,191,36,0.25); }
   .printer-canvas {
     display: block;
     width: 100%;
@@ -123,6 +130,8 @@
   .printer-specs { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
   .printer-status { margin-top: 8px; font-size: 13px; color: var(--text-primary); }
   .printer-status.idle { color: var(--text-muted); font-style: italic; }
+  .printer-status.done { color: var(--good); font-weight: 700; }
+  .printer-status.fault { color: var(--warn); font-weight: 700; }
   .progress {
     margin-top: 8px;
     height: 8px; background: #0a0a10; border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
@@ -148,6 +157,31 @@
     text-transform: uppercase; letter-spacing: 0.5px;
   }
   .printer-manage-btn:hover { background: var(--accent); color: white; border-color: var(--accent); }
+  .card-action {
+    flex: 1.4; padding: 7px 10px; font-size: 11px; font-weight: 800;
+    border: 1px solid var(--good); border-radius: 6px;
+    background: var(--good); color: #052e16; cursor: pointer; font-family: inherit;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .card-action:hover { background: #34d399; border-color: #34d399; }
+  .card-action.coldpull, .card-action.reprint { background: var(--warn); border-color: var(--warn); color: #3b2500; }
+  .card-action.clean { background: var(--bg-input); border-color: var(--border-strong); color: var(--text-primary); }
+  .card-secondary {
+    padding: 7px 10px; font-size: 11px; font-weight: 700;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input); color: var(--text-secondary); cursor: pointer; font-family: inherit;
+  }
+  .card-secondary:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+  /* Parts off the printer: washing, curing, cooling, sintering */
+  .stations {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card);
+    padding: 8px 12px; margin-bottom: 12px;
+  }
+  .stations-title { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 2px; }
+  .station-line { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 3px 0; }
+  .station-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .station-phase { color: #7dd3fc; white-space: nowrap; font-weight: 600; }
 
   /* Manage modal — single printer detail + nozzle picker + sell */
   .manage-card {
@@ -256,6 +290,11 @@
     height: 10px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 5px; overflow: hidden;
   }
   .wear-bar-fill { height: 100%; transition: width 0.3s, background 0.3s; }
+  .condition-action { margin-top: 8px; }
+  .condition-note { font-size: 11px; margin-top: 6px; color: var(--text-muted); }
+  .hardware-note { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+  .upgrade-card.owned { border-color: rgba(16,185,129,0.45); }
+  .upgrade-card.owned .nozzle-current { color: var(--good); }
 
   .service-grid {
     display: grid;
@@ -354,6 +393,22 @@
     padding: 12px; margin-bottom: 10px;
     background: var(--bg-card);
     transition: background 0.15s;
+    position: relative;
+  }
+  /* The part itself, top right (drawn by the 3D stage) */
+  .order-thumb {
+    position: absolute; top: 10px; right: 10px;
+    width: 64px; height: 48px; border-radius: 6px;
+    background: #24252b; object-fit: cover;
+    border: 1px solid var(--border);
+  }
+  .order-card.has-thumb .order-name, .order-card.has-thumb .order-spec, .order-card.has-thumb .order-cost { padding-right: 74px; }
+  /* ?fps=1: frame time, quality tier, draw calls */
+  #fpsReadout {
+    position: fixed; left: 8px; bottom: 8px; z-index: 300;
+    font: 11px/1.3 ui-monospace, Menlo, monospace; color: #d1d5db;
+    background: rgba(17,17,20,0.86); border: 1px solid #2f2f38; border-radius: 4px;
+    padding: 4px 7px; pointer-events: none; max-width: calc(100vw - 16px);
   }
   .order-card:hover { background: var(--bg-card-hover); }
   .order-name { font-weight: 700; font-size: 14px; color: var(--text-primary); }
@@ -364,6 +419,8 @@
     border: 1px solid rgba(168,85,247,0.3);
   }
   .order-spec { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+  .order-cost { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .order-for { font-size: 11px; color: var(--text-secondary); font-weight: 500; margin-left: 6px; white-space: nowrap; }
   .order-pay { font-size: 13px; color: var(--good); font-weight: 700; margin-top: 6px; }
   .order-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .order-actions button {
@@ -374,7 +431,25 @@
   }
   .order-actions button:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
   .order-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
-  .order-actions button.reject { color: var(--accent); flex: 0 0 auto; padding: 8px 12px; }
+  .order-actions button.reject { color: var(--accent); flex: 0 0 auto; padding: 8px 12px; margin-left: auto; }
+  .order-actions button[data-act="assign"] { flex: 1 1 220px; text-align: left; }
+  .assign-main, .assign-risk { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .assign-risk { font-size: 11px; font-weight: 500; color: var(--text-secondary); margin-top: 2px; }
+  .assign-risk.risky { color: var(--warn); }
+  .order-actions button:hover:not(:disabled) .assign-risk { color: inherit; }
+
+  /* Shop log: the last 50 things that happened */
+  .log-wrap { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .log-wrap h3 {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-secondary); margin-bottom: 6px; display: flex; justify-content: space-between;
+  }
+  .log-wrap h3 .count { font-size: 10px; color: var(--text-muted); font-weight: 500; }
+  #log { max-height: 280px; overflow-y: auto; }
+  .log-line { font-size: 12px; color: var(--text-secondary); padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04); line-height: 1.35; }
+  .log-line.good { color: #a7f3d0; }
+  .log-line.bad, .log-line.warn { color: #fde68a; }
+  .log-time { color: var(--text-muted); font-size: 10px; font-weight: 700; margin-right: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .order-actions button.reject:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
   .order-deadline { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
   .order-deadline.urgent { color: var(--accent); font-weight: 600; }
@@ -480,6 +555,18 @@
   }
   .mat-buy:hover:not(:disabled) { background: var(--accent); color: white; border-color: var(--accent); }
   .mat-buy:disabled { opacity: 0.35; cursor: not-allowed; }
+  .mat-dry {
+    padding: 5px 9px; font-size: 10px; font-weight: 700;
+    border: 1px solid #0369a1; border-radius: 5px;
+    background: rgba(14,165,233,0.12); color: #7dd3fc; cursor: pointer; font-family: inherit;
+    flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .mat-dry:hover:not(:disabled) { background: #0ea5e9; color: white; }
+  .mat-dry:disabled { opacity: 0.5; cursor: not-allowed; }
+  .damp-tag { color: #7dd3fc; font-weight: 700; }
+  .damp-tag.wet { color: var(--warn); }
+  .damp-tag.drying { color: var(--good); }
+  .upgrade-row .mat-stock { line-height: 1.3; }
 
   .empty { color: var(--text-muted); font-size: 13px; font-style: italic; padding: 16px 0; text-align: center; }
 
@@ -497,6 +584,8 @@
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(-8px); }
   .toast.success { background: var(--good); color: #052e16; border-color: var(--good); }
   .toast.error { background: var(--accent); color: white; border-color: var(--accent); }
+  .toast.warn { background: var(--warn); color: #3b2500; border-color: var(--warn); }
+  .toast { max-width: calc(100vw - 32px); text-align: center; }
 
   /* ---- Shop modal: simple LIST view ---- */
   .modal {
@@ -571,6 +660,9 @@
   }
   .shop-row:hover { border-color: var(--accent); box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
   .shop-row.locked { opacity: 0.5; }
+  /* Rows below the fold skip style, layout and paint until they scroll into view, so opening the
+     shop for the first time costs one short frame. */
+  .shop-row { content-visibility: auto; contain-intrinsic-size: auto 102px; }
 
   .shop-icon {
     width: 56px; height: 56px;
@@ -641,6 +733,9 @@
     main { grid-template-columns: 1fr; }
   }
   @media (max-width: 600px) {
+    header { flex-wrap: wrap; padding: 10px 16px; gap: 8px 16px; }
+    header .stats { order: 3; width: 100%; margin-left: 0; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+    header .controls { margin-left: auto; }
     .shop-row { grid-template-columns: 48px 1fr; }
     .shop-row-action { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; min-width: 0; }
   }
@@ -659,9 +754,17 @@
   import * as THREE from 'three';
   import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
   import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+  import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+  import { Line2 } from 'three/addons/lines/Line2.js';
+  import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+  import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+  import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+  import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
   window.THREE = THREE;
   window.RoundedBoxGeometry = RoundedBoxGeometry;
   window.RoomEnvironment = RoomEnvironment;
+  window.mergeGeometries = mergeGeometries;
+  Object.assign(window, { Line2, LineMaterial, LineGeometry, LineSegments2, LineSegmentsGeometry });
   window.dispatchEvent(new Event('threeReady'));
 </script>
 </head>
@@ -673,8 +776,12 @@
     <div><span class="stat-label">Day</span><span id="day">1</span> · <span id="hour">08:00</span></div>
     <div><span class="stat-label">Rep</span><span class="stat-rep" id="rep">0</span></div>
     <div><span class="stat-label">Shipped</span><span id="shipped">0</span></div>
+    <div title="Shop humidity: damp air makes TPU and nylon soak up water"><span class="stat-label">Humidity</span><span class="stat-hum" id="humidity">45%</span></div>
+    <span class="finishing-note" id="finishing" hidden></span>
+    <span class="save-note" id="saveNote" hidden title="This browser is blocking storage, so progress will be lost when the page closes">Not saving</span>
   </div>
   <div class="controls">
+    <button id="btnCollectAll" class="collect-all" hidden>Collect all</button>
     <button id="btnSpeed">1x</button>
     <button id="btnReset" class="danger">Reset</button>
   </div>
@@ -685,11 +792,16 @@
       Workshop <span class="count" id="printerCount"></span>
       <button class="shop-btn" onclick="window.openShop()">+ Buy Printer</button>
     </h2>
+    <div id="stations" class="stations" hidden></div>
     <div id="printers"></div>
   </section>
   <section>
     <h2>Incoming Orders <span class="count" id="orderCount"></span></h2>
     <div id="orders"></div>
+    <div class="log-wrap">
+      <h3>Shop log <span class="count" id="logCount"></span></h3>
+      <div id="log"></div>
+    </div>
   </section>
   <section class="inventory-section">
     <h2>
@@ -738,6 +850,6 @@
 </div>
 
 <div class="toast" id="toast"></div>
-<script src="game.js"></script>
+<script src="game.js?v=visual-2"></script>
 </body>
 </html>

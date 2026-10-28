@@ -2,128 +2,20 @@
 // Printer Tycoon — Three.js 3D printers + game logic + list-view shop.
 // =====================================================================
 
+// The save key never changes again (every earlier bump orphaned saves); save.js versions the
+// contents instead. BUILD busts caches for the code and data and comes from index.html's
+// game.js?v=… so there is one place to bump it.
 const STATE_KEY = 'printer-tycoon-state-v4';
+const BUILD = (() => {
+  try { return new URL(document.currentScript.src).searchParams.get('v') || 'dev'; } catch (e) { return 'dev'; }
+})();
+let Sim = null;   // docs/sim.js, loaded once in boot()
+let Save = null;  // docs/save.js, loaded with sim.js
 const TICK_MS = 250;
 const REAL_SEC_PER_GAME_HOUR = 4;
-const ORDER_SPAWN_BASE_HOURS = 45;
+// The game rules (nozzles, prices, order rate, failures, finishing) live in sim.js now; this file
+// draws them, plays them and saves them.
 
-// Nozzle catalog: size (mm) × hardness. Each slot has one installed at a time.
-// Real-world tradeoff: smaller = finer detail but slow; bigger = fast but coarse.
-// Hardened steel is required to print abrasive filaments (PA-CF, glass-filled, etc.)
-const NOZZLE_TYPES = [
-  { id: 'b02', size: 0.2, hardened: false, cost: 25,  label: '0.2mm Brass',     desc: 'High detail · slow' },
-  { id: 'b04', size: 0.4, hardened: false, cost: 5,   label: '0.4mm Brass',     desc: 'Default · balanced' },
-  { id: 'b06', size: 0.6, hardened: false, cost: 10,  label: '0.6mm Brass',     desc: 'Faster · less detail' },
-  { id: 'b08', size: 0.8, hardened: false, cost: 18,  label: '0.8mm Brass',     desc: 'Big parts · low detail' },
-  { id: 'h04', size: 0.4, hardened: true,  cost: 55,  label: '0.4mm Hardened',  desc: 'Default + abrasive-safe' },
-  { id: 'h06', size: 0.6, hardened: true,  cost: 75,  label: '0.6mm Hardened',  desc: 'Faster + abrasive-safe' },
-  { id: 'h08', size: 0.8, hardened: true,  cost: 95,  label: '0.8mm Hardened',  desc: 'Big & abrasive-safe' },
-  { id: 'r04', size: 0.4, hardened: true,  cost: 280, label: '0.4mm Ruby',      desc: 'Lifetime nozzle · premium' },
-];
-
-// Nozzle effect multipliers — applied to the printer base specs at job-assign time
-const NOZZLE_EFFECTS = {
-  0.2: { speed: 0.5,  precision: 1.18, reliability: 0.95 },
-  0.4: { speed: 1.0,  precision: 1.0,  reliability: 1.0  },
-  0.6: { speed: 1.55, precision: 0.88, reliability: 1.0  },
-  0.8: { speed: 2.10, precision: 0.78, reliability: 0.92 },
-};
-
-// Used-printer depreciation: 75% of new at 0 hours.
-// Two factors: lifetime AGE and current WEAR (since last service).
-// Servicing costs money but preserves resale value.
-function calcSellPrice(slot) {
-  const printer = printerById(slot.printerId);
-  const basePrice = slot.purchasePrice ?? (printer ? printer.price : 200);
-  const ageDep  = Math.min(0.40, (slot.totalHours || 0) * 0.0003); // can't undo age
-  const wearDep = Math.min(0.30, (slot.wearHours  || 0) * 0.0008); // service clears this
-  const factor = Math.max(0.15, 0.75 - ageDep - wearDep);
-  return Math.round(basePrice * factor);
-}
-
-// A nozzle is "compatible" with a material if it can physically print it.
-// Abrasive filaments wear brass nozzles down in hours — game rule: must be hardened.
-const ABRASIVE_MATERIALS = new Set(['pa-cf', 'fiber-carbon', 'fiber-kevlar', 'fiber-fiberglass', 'sls-pa12-gf']);
-
-function nozzleCompatible(slot, materialId) {
-  if (ABRASIVE_MATERIALS.has(materialId) && !slot.nozzleHardened) {
-    return { ok: false, reason: 'Need hardened nozzle' };
-  }
-  return { ok: true };
-}
-
-// Printers that ship from factory with a hardened nozzle (their stock is abrasive-rated)
-const SHIP_WITH_HARDENED = new Set([
-  'prusa-mk4s', 'bambu-p1s-ams', 'bambu-x1c-ams', 'bambu-x1e', 'bambu-h2d',
-  'prusa-xl-5tool', 'voron-2-4', 'qidi-x-max-3', 'bcn3d-sigma-d25',
-]);
-
-const STARTING_PRINTER = 'ender-3-v3-se';
-const STARTING_MONEY = 500;
-const STARTING_FILAMENT_GRAMS = 1000;
-const STARTING_FILAMENT_ID = 'pla';
-
-const TIER_UNLOCK_REP = {
-  garage: 0,
-  hobbyist: 5,
-  studio: 25,
-  pro: 75,
-  industrial: 150,
-  endgame: 300,
-};
-
-const SHAPE_FOR_PRODUCT = {
-  'phone-case': 'flat',
-  'cookie-cutter': 'flat',
-  'plant-pot': 'tall',
-  'wall-hook': 'small',
-  'articulated-toy': 'humanoid',
-  'rc-car-body': 'flat-wide',
-  'drone-frame': 'cross',
-  'decorative-vase': 'tall',
-  'lithophane-lamp': 'dome',
-  'cosplay-accessory': 'angular',
-  'miniature-batch': 'humanoid',
-  'custom-grip-batch': 'flat',
-  'jewelry-casting': 'gem',
-  'functional-gear': 'gear',
-  'robot-enclosure': 'box',
-  'cosplay-helmet': 'dome',
-  'drone-propeller': 'cross',
-  'engineering-fixture': 'bracket',
-  'end-use-bracket': 'bracket',
-  'surgical-guide': 'small',
-  'dental-crown-wax': 'gem',
-  'custom-orthotic': 'flat-wide',
-  'sls-production-batch': 'batch',
-  'mjf-connector-batch': 'batch',
-  'biocompatible-device': 'box',
-  'aerospace-bracket': 'bracket',
-  'engine-cooling-channel': 'tall',
-  'tooling-die': 'block',
-  'heat-exchanger': 'angular',
-  'surgical-implant': 'humanoid',
-};
-
-const MODEL_PALETTE = [
-  '#ef4444', '#f97316', '#f59e0b', '#eab308',
-  '#84cc16', '#22c55e', '#10b981', '#14b8a6',
-  '#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1',
-  '#8b5cf6', '#a855f7', '#d946ef', '#ec4899',
-  '#fafafa', '#525252',
-];
-
-const FIXED_COLORS = {
-  'dental-crown-wax': '#fef3c7',
-  'jewelry-casting': '#facc15',
-  'surgical-guide': '#fafafa',
-  'surgical-implant': '#cbd5e1',
-  'aerospace-bracket': '#94a3b8',
-  'engine-cooling-channel': '#fde68a',
-  'tooling-die': '#475569',
-  'heat-exchanger': '#cbd5e1',
-  'biocompatible-device': '#fafafa',
-};
 
 // Brand colors used in 3D printer geometry
 const BRAND_COLORS = {
@@ -146,17 +38,24 @@ const BRAND_COLORS = {
 let printersCat = [];
 let materialsCat = [];
 let productsCat = [];
+let Cat = null;            // Sim.makeCatalog(): lookups that also know "Unknown machine"
 let state = null;
 let speed = 1;
 let lastTickReal = Date.now();
 let shopFilter = 'all';
+let saveFailing = false;   // shows the "Not saving" note while storage refuses writes
+let bootNotes = [];
+// Which parts of the page need drawing again. tick() sets these from the rules' own dirty flags,
+// so a quiet tick only touches the clock.
+const dirty = { header: true, printers: true, orders: true, inventory: true, log: true, shop: true, manage: true };
+const markAll = () => { for (const k of Object.keys(dirty)) dirty[k] = true; };
 
 // =====================================================================
 // catalog + state
 // =====================================================================
 async function loadCatalogs() {
   // Cache-bust so users always get the freshest catalog after a deploy
-  const v = STATE_KEY;
+  const v = BUILD;
   const [pr, mt, pd] = await Promise.all([
     fetch(`data/printers.json?v=${v}`).then(r => r.json()),
     fetch(`data/materials.json?v=${v}`).then(r => r.json()),
@@ -165,37 +64,19 @@ async function loadCatalogs() {
   printersCat = pr.printers;
   materialsCat = mt.materials;
   productsCat = pd.products;
+  Cat = Sim.makeCatalog(pr, mt, pd);
   console.log(`[Print3D] Loaded ${materialsCat.length} materials, ${printersCat.length} printers, ${productsCat.length} products`);
 }
 
-const printerById = id => printersCat.find(p => p.id === id);
-const materialById = id => materialsCat.find(m => m.id === id);
-const productById = id => productsCat.find(p => p.id === id);
+// An id that left the catalog comes back as the "Unknown machine" stub, so old saves still draw.
+const printerById = id => Cat.printer(id);
+const materialById = id => Cat.material(id);
+const productById = id => Cat.product(id);
 
 function makeSlot(printerId, slotId, purchasePrice = null) {
-  const printer = printersCat.find(p => p.id === printerId);
-  const price = purchasePrice ?? (printer ? printer.price : 200);
-  const hardened = SHIP_WITH_HARDENED.has(printerId);
-  return {
-    printerId, slotId,
-    state: 'idle',
-    job: null,
-    nozzleSize: 0.4,
-    nozzleHardened: hardened,
-    totalHours: 0,
-    wearHours: 0,        // increases with print time, decreases with service
-    purchasePrice: price,
-  };
+  return Sim.makeSlot(Cat, printerId, slotId, purchasePrice ?? undefined);
 }
 
-// Maintenance: wear-adjusted reliability
-// Stock reliability fades as wearHours rises; service restores it.
-// Cap fall at 50% of base reliability so printers never become useless.
-function effectiveReliability(slot, printer) {
-  const wear = slot.wearHours || 0;
-  const factor = Math.max(0.5, 1 - wear * 0.0008);  // 0 wear=1.0, 625 wear=0.5
-  return printer.baseReliability * factor;
-}
 function wearStatus(slot) {
   const w = slot.wearHours || 0;
   if (w < 80)  return { label: 'Good',     pct: w/8,    color: '#22c55e' };
@@ -204,65 +85,47 @@ function wearStatus(slot) {
   return { label: 'Service required', pct: Math.min(95, 90 + (w-400)*0.025), color: '#dc2626' };
 }
 
-const SERVICE_OPTIONS = [
-  { id: 'tune',    label: 'Quick tune-up',     cost: 30,  reduceWear: 60,  desc: 'Bed level, belt tension, lube rails' },
-  { id: 'service', label: 'Full service',      cost: 90,  reduceWear: 200, desc: 'Replace PTFE, clean hot end, recalibrate' },
-  { id: 'rebuild', label: 'Major overhaul',    cost: 220, reduceWear: 9999,desc: 'Restore as-new wear; bearings, belts, PEI sheet' },
-];
-
+function newSeed() {
+  try { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] || 1; } catch (e) { return (Date.now() >>> 0) || 1; }
+}
+// A new game opens with one line in the shop log, so the log never starts blank.
 function defaultState() {
-  return {
-    money: STARTING_MONEY,
-    day: 1,
-    hour: 8,
-    reputation: 0,
-    shipped: 0,
-    printers: [makeSlot(STARTING_PRINTER, 1)],
-    inventory: { [STARTING_FILAMENT_ID]: STARTING_FILAMENT_GRAMS },
-    orders: [],
-    nextOrderInHours: 5,
-    nextOrderId: 1,
-    nextSlotId: 2,
-  };
+  const s = Sim.newGame(Cat, newSeed());
+  const p = printerById(s.printers[0].printerId);
+  Sim.appendLog(s, [{ at: Sim.now(s), kind: 'good',
+    text: `Your garage shop is open: one ${p.model}, ${Sim.fmtMoney(s.money)} and a 1 kg spool of PLA. The first order should come in a few hours.` }]);
+  return s;
 }
 
-// Migrate any pre-v4 slot fields that are missing (defensive).
-function migrateSlot(slot) {
-  if (slot.nozzleSize === undefined) slot.nozzleSize = 0.4;
-  if (slot.nozzleHardened === undefined) slot.nozzleHardened = SHIP_WITH_HARDENED.has(slot.printerId);
-  if (slot.totalHours === undefined) slot.totalHours = 0;
-  if (slot.wearHours === undefined) slot.wearHours = slot.totalHours || 0;
-  if (slot.purchasePrice === undefined) {
-    const p = printerById(slot.printerId);
-    slot.purchasePrice = p ? p.price : 200;
-  }
-  return slot;
-}
-
+// save.js reads the save (or rescues an older one), keeps a backup, migrates and validates it.
 function loadState() {
-  try {
-    const raw = localStorage.getItem(STATE_KEY);
-    if (raw) {
-      const s = JSON.parse(raw);
-      if (s && typeof s.money === 'number') {
-        if (Array.isArray(s.printers)) s.printers.forEach(migrateSlot);
-        return s;
-      }
-    }
-  } catch (e) {}
-  return defaultState();
+  let storage = null;
+  try { storage = window.localStorage; } catch (e) {}
+  const r = Save.load(storage, { cat: Cat, Sim, newGame: defaultState });
+  bootNotes = r.notes || [];
+  if (r.notes && r.notes.some(n => n.problems)) console.warn('[Print3D] save problems:', r.notes.map(n => n.problems).filter(Boolean));
+  return r.state;
 }
 
-function saveState() { localStorage.setItem(STATE_KEY, JSON.stringify(state)); }
+function saveState() {
+  let ok = false;
+  try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); ok = true; } catch (e) {}
+  if (ok === saveFailing) {
+    saveFailing = !ok;
+    const note = document.getElementById('saveNote');
+    if (note) note.hidden = !saveFailing;
+  }
+}
 
 function resetState() {
   if (!confirm('Reset all progress?')) return;
-  // Dispose all 3D scenes
-  for (const info of printerScenes.values()) info.renderer.dispose();
-  printerScenes.clear();
+  // Drop every card's 3D view (the stage and its one renderer stay)
+  detachAllCards();
   state = defaultState();
   saveState();
   document.getElementById('printers').innerHTML = '';
+  resetKeyedLists();
+  markAll();
   render();
   toast('Game reset.', 'success');
 }
@@ -270,15 +133,6 @@ function resetState() {
 // =====================================================================
 // helpers
 // =====================================================================
-function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
-
-function pickWeighted(items) {
-  const total = items.reduce((s, x) => s + (x.demandWeight || 1), 0);
-  let r = Math.random() * total;
-  for (const x of items) { r -= (x.demandWeight || 1); if (r <= 0) return x; }
-  return items[items.length - 1];
-}
-
 function fmtTime(h) {
   const hh = Math.floor(h);
   const mm = Math.floor((h - hh) * 60);
@@ -297,15 +151,14 @@ function fmtPrice(n) {
   return `$${n.toLocaleString('en-US')}`;
 }
 
-function effectiveThroughput(p) { return p.throughputGPH || p.throughputCM3PH || 30; }
-
-function colorForJob(productId) {
-  if (FIXED_COLORS[productId]) return FIXED_COLORS[productId];
-  return MODEL_PALETTE[Math.floor(Math.random() * MODEL_PALETTE.length)];
+// How fast a machine builds: grams an hour for extrusion, millimeters of height for vats and beds.
+function speedLabel(p) {
+  if (Sim.techClass(p) === 'fdm') return `${p.throughputGPH || 30} g/hr`;
+  return p.verticalMMPerHour ? `${p.verticalMMPerHour} mm/hr tall` : '';
 }
 
-function hexToInt(hex) {
-  return parseInt(hex.replace('#', ''), 16);
+function colorForJob(job) {
+  return (job && job.color) || Sim.FIXED_COLORS[job && job.productId] || Sim.MODEL_PALETTE[Math.abs((job && job.orderId) | 0) % Sim.MODEL_PALETTE.length];
 }
 
 function printerCategory(printer) {
@@ -315,151 +168,66 @@ function printerCategory(printer) {
   return 'industrial';
 }
 
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 // =====================================================================
-// game loop: spawn / assign / complete
+// game loop: the rules are in sim.js; these wrappers play them and show what happened
 // =====================================================================
-function productCanRunOnSlot(product, slot) {
-  const printer = printerById(slot.printerId);
-  if (!printer) return false;
-  if (product.tech && !product.tech.includes(printer.tech)) return false;
-  if (!product.materials.some(m => printer.materials.includes(m))) return false;
-  if (product.minPrecision) {
-    const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
-    if (printer.precision * nozEff.precision < product.minPrecision) return false;
-  }
-  if (product.minBuildVolumeMM && printer.buildVolumeMM) {
-    const bv = printer.buildVolumeMM, need = product.minBuildVolumeMM;
-    if (bv[0] < need[0] || bv[1] < need[1] || bv[2] < need[2]) return false;
-  }
-  // At least one material must be both supported AND nozzle-compatible
-  const ok = product.materials.find(m =>
-    printer.materials.includes(m) && nozzleCompatible(slot, m).ok
-  );
-  return !!ok;
-}
+function canAssign(order, slot) { return Sim.canAssign(Cat, state, order, slot); }
 
 function spawnOrder() {
-  // A product is eligible if EITHER:
-  //   - the player's reputation has unlocked it, OR
-  //   - the player owns a printer that can physically run it
-  // (Owning the hardware should bring orders even if rep is still low —
-  //  otherwise an early Fuse 1+ purchase gives you 0 SLS orders.)
-  const repOK = p => p.unlockReputation <= state.reputation;
-  const printerOK = p => state.printers.some(slot => productCanRunOnSlot(p, slot));
-  const eligible = productsCat.filter(p => repOK(p) || printerOK(p));
-  if (eligible.length === 0) return;
-  // Prefer products that can actually be printed by the current workshop.
-  // 90% from compatible pool, 10% aspirational (still a small upgrade nudge).
-  const compatible = eligible.filter(printerOK);
-  const pool = (compatible.length > 0 && Math.random() < 0.90) ? compatible : eligible;
-  const product = pickWeighted(pool);
-  const grams = rand(product.grams[0], product.grams[1]);
-  const baseHours = rand(product.printHours[0], product.printHours[1]);
-  const priceMult = 0.85 + Math.random() * 0.45;
-  state.orders.push({
-    id: state.nextOrderId++,
-    productId: product.id,
-    productName: product.name,
-    category: product.category,
-    materialId: product.materials[0],
-    materialOptions: product.materials,
-    grams,
-    baseHours,
-    basePrice: product.basePrice * priceMult * (product.batchSize || 1),
-    minPrecision: product.minPrecision,
-    minBuildVolumeMM: product.minBuildVolumeMM,
-    techRequired: product.tech,
-    deadlineHours: rand(product.deadlineHours[0], product.deadlineHours[1]),
-    qualityValue: product.qualityValue,
-    batchSize: product.batchSize || 1,
-  });
+  const ev = Sim.spawnOrder(Cat, state);
+  if (ev) handleEvents([ev]);
+  dirty.orders = true;
 }
 
-function canAssign(order, slot) {
-  const printer = printerById(slot.printerId);
-  if (!printer) return { ok: false, reason: 'no printer' };
-  if (slot.state !== 'idle') return { ok: false, reason: 'busy' };
-  if (!order.materialOptions.some(m => printer.materials.includes(m))) {
-    return { ok: false, reason: `Wrong material (needs ${order.materialOptions.join('/')})` };
-  }
-  if (order.techRequired && !order.techRequired.includes(printer.tech)) {
-    return { ok: false, reason: `Wrong tech (needs ${order.techRequired.join('/')})` };
-  }
-  // Effective precision is gated by the nozzle size as well as the printer
-  const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
-  const effectivePrecision = printer.precision * nozEff.precision;
-  if (order.minPrecision && effectivePrecision < order.minPrecision) {
-    return { ok: false, reason: `Precision too low (need ${order.minPrecision}, ${slot.nozzleSize}mm gives ${effectivePrecision.toFixed(2)})` };
-  }
-  const bv = printer.buildVolumeMM, need = order.minBuildVolumeMM;
-  if (bv && need && (bv[0] < need[0] || bv[1] < need[1] || bv[2] < need[2])) {
-    return { ok: false, reason: `Build volume too small` };
-  }
-  // Pick the FIRST printable material that is also nozzle-compatible
-  const matId = order.materialOptions.find(m => {
-    if (!printer.materials.includes(m)) return false;
-    return nozzleCompatible(slot, m).ok;
-  });
-  if (!matId) {
-    // Better diagnostic
-    const supported = order.materialOptions.find(m => printer.materials.includes(m));
-    if (supported && ABRASIVE_MATERIALS.has(supported) && !slot.nozzleHardened) {
-      return { ok: false, reason: `${materialById(supported)?.name || supported} needs hardened nozzle` };
-    }
-    return { ok: false, reason: 'material mismatch' };
-  }
-  const stock = state.inventory[matId] || 0;
-  if (stock < order.grams) {
-    const m = materialById(matId);
-    return { ok: false, reason: `Need ${Math.ceil(order.grams)}g ${m ? m.name : matId}` };
-  }
-  return { ok: true, materialId: matId };
+// Rules events become log lines, and the ones worth interrupting for become a toast.
+function handleEvents(events) {
+  if (!events || !events.length) return;
+  Sim.appendLog(state, events);
+  dirty.log = true;
+  const t = events.filter(e => e.toast).pop();
+  if (t) toast(t.text, t.kind === 'good' ? 'success' : t.kind === 'bad' ? 'warn' : 'info');
+}
+
+function afterAction(r, okToast) {
+  if (!r.ok) { toast(r.reason, 'error'); return false; }
+  handleEvents(r.events);
+  if (okToast) toast(okToast, 'success');
+  markAll();
+  render();
+  saveState();
+  return true;
 }
 
 function assignOrder(orderId, slotIdx) {
   const order = state.orders.find(o => o.id === orderId);
-  const slot = state.printers[slotIdx];
-  if (!order || !slot) return;
-  const check = canAssign(order, slot);
-  if (!check.ok) { toast(check.reason, 'error'); return; }
-  const printer = printerById(slot.printerId);
-  state.inventory[check.materialId] -= order.grams;
-  const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
-  const speedFactor = (effectiveThroughput(printer) / 30) * nozEff.speed;
-  const adjustedHours = order.baseHours / speedFactor;
-  slot.state = 'printing';
-  slot.job = {
-    orderId: order.id,
-    productId: order.productId,
-    productName: order.productName,
-    materialId: check.materialId,
-    grams: order.grams,
-    hoursTotal: adjustedHours,
-    hoursElapsed: 0,
-    payout: order.basePrice,
-    qualityValue: order.qualityValue,
-    precision: printer.precision * nozEff.precision,
-    color: colorForJob(order.productId),
-  };
-  state.orders = state.orders.filter(o => o.id !== orderId);
-  toast(`Started: ${order.productName}`, 'success');
-  render();
+  const r = Sim.assign(Cat, state, orderId, slotIdx);
+  afterAction(r, r.ok && order ? `Started: ${order.productName}` : null);
 }
 
+// A finished part comes off the printer: FDM ships now, everything else goes to finishing first.
 function completeJob(slot) {
-  const job = slot.job;
-  const qualityMult = 1 - job.qualityValue + job.qualityValue * job.precision;
-  const payout = job.payout * qualityMult;
-  state.money += payout;
-  state.shipped += 1;
-  state.reputation += Math.max(1, Math.floor(payout / 50));
-  slot.state = 'idle';
-  slot.job = null;
-  toast(`Shipped → +${fmtMoney(payout)}`, 'success');
+  const i = state.printers.indexOf(slot);
+  if (i >= 0) collectPart(i);
+}
+function collectPart(slotIdx) { afterAction(Sim.collect(Cat, state, slotIdx)); }
+function collectAll() { afterAction(Sim.collectAll(Cat, state)); }
+function coldPull(slotIdx) { afterAction(Sim.coldPull(Cat, state, slotIdx), 'Cold pull: warming up the nozzle'); }
+function reprintJob(slotIdx) { afterAction(Sim.reprint(Cat, state, slotIdx)); }
+function releaseJob(slotIdx) { afterAction(Sim.release(Cat, state, slotIdx)); }
+function cleanBed(slotIdx) { afterAction(Sim.cleanBed(Cat, state, slotIdx), 'Cleaning and leveling the bed'); }
+function dryMaterial(matId) { afterAction(Sim.startDrying(Cat, state, matId)); }
+function buyUpgrade(id, slotIdx) {
+  const u = Sim.UPGRADES.find(x => x.id === id);
+  if (!u) return;
+  if (!confirm(`Buy ${Sim.aAn(u.name.toLowerCase())} for ${fmtPrice(u.cost)}?`)) return;
+  afterAction(Sim.buyUpgrade(Cat, state, id, slotIdx));
 }
 
 function rejectOrder(orderId) {
-  state.orders = state.orders.filter(o => o.id !== orderId);
+  Sim.rejectOrder(state, orderId);
+  dirty.orders = true;
   render();
 }
 
@@ -469,36 +237,29 @@ function rejectAllOrders() {
   const n = state.orders.length;
   state.orders = [];
   toast(`Declined ${n} orders`, 'success');
+  dirty.orders = true;
   render();
 }
 
 function buyMaterial(matId, qty) {
   const m = materialById(matId);
   if (!m) return;
-  const unitCost = m.costPerKg ?? m.costPerLiter ?? 50;
-  const cost = unitCost * qty;
-  if (state.money < cost) { toast('Not enough cash', 'error'); return; }
-  state.money -= cost;
-  state.inventory[matId] = (state.inventory[matId] || 0) + qty * 1000;
-  toast(`Bought ${qty}${m.category === 'resin' ? 'L' : 'kg'} ${m.name}`, 'success');
-  render();
+  const r = Sim.buyMaterial(Cat, state, matId, qty);
+  afterAction(r, r.ok ? `Bought ${qty} kg of ${Sim.materialLabel(Cat, matId)}` : null);
 }
 
 // =====================================================================
 // printer shop — clean LIST view with brand, model, specs, buy
 // =====================================================================
-async function openShop() {
+function openShop() {
   document.getElementById('shopModal').classList.add('open');
   shopFilter = 'all';
   document.querySelectorAll('#shopFilters button').forEach(b => {
     b.classList.toggle('active', b.dataset.filter === 'all');
   });
   renderShop();
-  // Lazily generate 3D thumbnails (first time only) and re-render to swap icons → thumbs
-  if (window.THREE && shopThumbnails.size === 0) {
-    await generateShopThumbnails();
-    renderShop();
-  }
+  // Pictures arrive a few per frame from the stage; rows pick them up without being rebuilt.
+  requestShopThumbnails();
 }
 
 function closeShop() {
@@ -515,9 +276,9 @@ function setShopFilter(f) {
 
 function buyPrinter(id) {
   const printer = printerById(id);
-  if (!printer) return;
-  if (state.reputation < (TIER_UNLOCK_REP[printer.tier] || 0)) {
-    toast(`Need ${TIER_UNLOCK_REP[printer.tier]} reputation`, 'error');
+  if (!printer || printer.unknown) return;
+  if (state.reputation < (Sim.TIER_UNLOCK_REP[printer.tier] || 0)) {
+    toast(`Need ${Sim.TIER_UNLOCK_REP[printer.tier]} reputation`, 'error');
     return;
   }
   if (state.money < printer.price) {
@@ -525,11 +286,7 @@ function buyPrinter(id) {
     return;
   }
   if (!confirm(`Buy ${printer.brand} ${printer.model} for ${fmtPrice(printer.price)}?`)) return;
-  state.money -= printer.price;
-  state.printers.push(makeSlot(id, state.nextSlotId++, printer.price));
-  toast(`Welcome, ${printer.model}!`, 'success');
-  render();
-  closeShop();
+  if (afterAction(Sim.buyPrinter(Cat, state, id), `Welcome, ${printer.model}!`)) closeShop();
 }
 
 // =====================================================================
@@ -735,12 +492,14 @@ function buyMaterialDirect(matId) {
 }
 
 // =====================================================================
-// printer management — nozzle swap + sell
+// printer management — condition, upgrades, maintenance, nozzle swap, sell
 // =====================================================================
 let manageSlotIdx = -1;
+let manageSig = '';
 
 function openManage(slotIdx) {
   manageSlotIdx = slotIdx;
+  manageSig = '';
   document.getElementById('manageModal').classList.add('open');
   renderManage();
 }
@@ -754,37 +513,24 @@ function changeNozzle(nozzleId) {
   if (manageSlotIdx < 0) return;
   const slot = state.printers[manageSlotIdx];
   if (!slot) return;
-  if (slot.state !== 'idle') { toast('Stop the print first', 'error'); return; }
-  const noz = NOZZLE_TYPES.find(n => n.id === nozzleId);
+  const noz = Sim.nozzleType(nozzleId);
   if (!noz) return;
-  if (slot.nozzleSize === noz.size && slot.nozzleHardened === noz.hardened) {
-    toast('Already installed', 'error');
-    return;
-  }
-  if (state.money < noz.cost) { toast(`Need ${fmtPrice(noz.cost)}`, 'error'); return; }
-  if (!confirm(`Swap to ${noz.label} for ${fmtPrice(noz.cost)}?`)) return;
-  state.money -= noz.cost;
-  slot.nozzleSize = noz.size;
-  slot.nozzleHardened = noz.hardened;
-  toast(`Installed ${noz.label}`, 'success');
-  renderManage();
-  render();
+  if (slot.phase !== 'idle') { toast('Stop the print first', 'error'); return; }
+  const fresh = Sim.slotNozzle(slot).id === noz.id;
+  if (!confirm(`${fresh ? 'Fit a fresh' : 'Swap to a'} ${noz.label} nozzle for ${fmtPrice(noz.cost)}?`)) return;
+  afterAction(Sim.changeNozzle(Cat, state, manageSlotIdx, nozzleId), `Installed a ${noz.label} nozzle`);
 }
 
 function performService(slotIdx, serviceId) {
+  const svc = Sim.SERVICE_OPTIONS.find(s => s.id === serviceId);
+  if (!svc) return;
   const slot = state.printers[slotIdx];
   if (!slot) return;
-  if (slot.state !== 'idle') { toast('Stop the print first', 'error'); return; }
-  const svc = SERVICE_OPTIONS.find(s => s.id === serviceId);
-  if (!svc) return;
+  if (slot.phase !== 'idle') { toast('Stop the print first', 'error'); return; }
   if (state.money < svc.cost) { toast(`Need ${fmtPrice(svc.cost)}`, 'error'); return; }
   if (!confirm(`${svc.label} for ${fmtPrice(svc.cost)}?`)) return;
-  state.money -= svc.cost;
-  const reduce = Math.min(slot.wearHours || 0, svc.reduceWear);
-  slot.wearHours = Math.max(0, (slot.wearHours || 0) - svc.reduceWear);
-  toast(`${svc.label} complete · cleared ${reduce.toFixed(0)}h wear`, 'success');
-  renderManage();
-  render();
+  const r = Sim.service(Cat, state, slotIdx, serviceId);
+  afterAction(r, r.ok ? `${svc.label} complete · cleared ${r.cleared.toFixed(0)} h of wear` : null);
 }
 
 function sellPrinter(slotIdxArg) {
@@ -793,20 +539,28 @@ function sellPrinter(slotIdxArg) {
   if (state.printers.length <= 1) { toast('Need at least one printer', 'error'); return; }
   const slot = state.printers[slotIdx];
   if (!slot) return;
-  if (slot.state !== 'idle') { toast('Stop the print first', 'error'); return; }
+  if (slot.phase !== 'idle') { toast('Stop the print first', 'error'); return; }
   const printer = printerById(slot.printerId);
-  const sellAmt = calcSellPrice(slot);
-  if (!confirm(`Sell ${printer.brand} ${printer.model} for ${fmtPrice(sellAmt)}?\nUsed: ${slot.totalHours.toFixed(1)} hours\n(Original: ${fmtPrice(slot.purchasePrice)})`)) return;
-  state.money += sellAmt;
-  state.printers.splice(slotIdx, 1);
-  // Dispose any 3D scene tied to this card before re-render
+  const sellAmt = Sim.calcSellPrice(Cat, slot);
+  if (!confirm(`Sell ${printer.brand} ${printer.model} for ${fmtPrice(sellAmt)}?\nUsed: ${(slot.totalHours || 0).toFixed(1)} hours\n(Original: ${fmtPrice(slot.purchasePrice)})`)) return;
+  const r = Sim.sellPrinter(Cat, state, slotIdx);
+  if (!r.ok) { toast(r.reason, 'error'); return; }
   closeManage();
-  toast(`Sold for ${fmtPrice(sellAmt)}`, 'success');
-  // Force the workshop card list to rebuild fully so canvases + scenes get cleaned up
+  // Rebuild the workshop cards so canvases and their views get cleaned up
+  detachAllCards();
   document.getElementById('printers').innerHTML = '';
-  for (const info of printerScenes.values()) info.renderer.dispose();
-  printerScenes.clear();
-  render();
+  afterAction(r, `Sold for ${fmtPrice(sellAmt)}`);
+}
+
+// Only the values the modal shows; while they stay the same the modal is left alone.
+function manageSignature(slot) {
+  return [manageSlotIdx, slot.printerId, slot.phase, slot.nozzleType, Math.round((slot.nozzleHealth ?? 1) * 100), Math.round((slot.bed ?? 1) * 100),
+    (slot.upgrades || []).join('+'), Math.floor((slot.wearHours || 0) / 5), Math.floor((slot.totalHours || 0) / 5), state.printers.length,
+    Math.floor(state.money)].join('|');
+}
+
+function bar(pct, color) {
+  return `<div class="wear-bar"><div class="wear-bar-fill" style="width: ${Math.max(0, Math.min(100, pct)).toFixed(0)}%; background: ${color}"></div></div>`;
 }
 
 function renderManage() {
@@ -814,42 +568,88 @@ function renderManage() {
   const slot = state.printers[manageSlotIdx];
   if (!slot) return closeManage();
   const printer = printerById(slot.printerId);
-  if (!printer) return closeManage();
+  const sig = manageSignature(slot);
+  if (sig === manageSig) return;
+  manageSig = sig;
+  const tc = Sim.techClass(printer);
+  const fdm = Sim.usesNozzle(printer);
+  const noz = fdm ? Sim.slotNozzle(slot) : null;
+  const nozEff = noz ? (Sim.NOZZLE_EFFECTS[noz.size] || Sim.NOZZLE_EFFECTS[0.4]) : null;
 
-  document.getElementById('manageSubtitle').innerHTML =
-    `<span class="brand">${printer.brand}</span> <strong>${printer.model}</strong> · <span class="printer-tier ${printer.tier}">${printer.tier}</span>`;
+  document.getElementById('manageSubtitle').innerHTML = printer.unknown
+    ? `<strong>Unknown machine</strong> · <span class="muted">no longer in the catalog</span>`
+    : `<span class="brand">${esc(printer.brand)}</span> <strong>${esc(printer.model)}</strong> · <span class="printer-tier ${printer.tier}">${printer.tier}</span>`;
 
-  const nozEff = NOZZLE_EFFECTS[slot.nozzleSize] || NOZZLE_EFFECTS[0.4];
-  const effThroughput = effectiveThroughput(printer) * nozEff.speed;
-  const effPrecision = printer.precision * nozEff.precision;
-  const effReliability = printer.baseReliability * nozEff.reliability;
-  const sellAmt = calcSellPrice(slot);
-  const isIdle = slot.state === 'idle';
+  const sellAmt = Sim.calcSellPrice(Cat, slot);
+  const isIdle = slot.phase === 'idle';
   const isOnly = state.printers.length <= 1;
+  const busyLabel = Sim.busyText(slot);
 
-  // Apply wear to reliability for display
-  const wearAdjustedReliability = effectiveReliability(slot, printer) * nozEff.reliability;
-  // Stats
-  const statsHtml = `
-    <div class="manage-stat-row"><span class="manage-stat-label">Tech</span><span class="manage-stat-value">${printer.tech}</span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Build volume</span><span class="manage-stat-value">${printer.buildVolumeMM.join(' × ')} mm</span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Throughput (now)</span><span class="manage-stat-value">${effThroughput.toFixed(0)} g/hr <span class="muted">(${effectiveThroughput(printer)} stock)</span></span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Precision (now)</span><span class="manage-stat-value">${effPrecision.toFixed(2)} <span class="muted">(${printer.precision.toFixed(2)} stock)</span></span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Reliability (now)</span><span class="manage-stat-value">${(wearAdjustedReliability*100).toFixed(0)}% <span class="muted">(${(printer.baseReliability*100).toFixed(0)}% stock, ${(slot.wearHours||0).toFixed(0)}h wear)</span></span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Multi-material</span><span class="manage-stat-value">${printer.multiMaterialColors > 0 ? `${printer.multiMaterialColors} colors` : 'single'}</span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Power draw</span><span class="manage-stat-value">${printer.powerW} W</span></div>
-    <div class="manage-stat-row"><span class="manage-stat-label">Released</span><span class="manage-stat-value">${printer.released}</span></div>
-  `;
+  const rows = [];
+  const row = (label, value) => rows.push(`<div class="manage-stat-row"><span class="manage-stat-label">${label}</span><span class="manage-stat-value">${value}</span></div>`);
+  if (!printer.unknown) {
+    row('Tech', `${printer.tech}${Sim.hardwareLabel(printer) ? ` <span class="muted">${Sim.hardwareLabel(printer)}</span>` : ''}`);
+    row('Build volume', `${printer.buildVolumeMM.join(' × ')} mm`);
+    if (fdm) row('Speed (now)', `${Math.round((printer.throughputGPH || 30) * nozEff.speed)} g/hr <span class="muted">(${printer.throughputGPH || 30} with 0.4 mm)</span>`);
+    else row('Speed', `${printer.verticalMMPerHour} mm of height per hour <span class="muted">(every part on the plate at once)</span>`);
+    row('Precision (now)', `${Sim.effectivePrecision(printer, slot).toFixed(2)} <span class="muted">(${printer.precision.toFixed(2)} stock)</span>`);
+    row('Reliability', `${Math.round(printer.baseReliability * 100)}% <span class="muted">for a 4 h print, before wear and setup</span>`);
+    row('Multi-material', printer.multiMaterialColors > 0 ? `${printer.multiMaterialColors} colors` : 'single');
+    row('Power', `${printer.powerW} W average${printer.powerHotW ? ` · ${printer.powerHotW} W on hot materials` : ''} <span class="muted">($${Sim.KWH_PRICE.toFixed(2)}/kWh)</span>`);
+    row('Released', esc(printer.released));
+  } else {
+    row('Status', 'This machine is no longer in the catalog. It can still be sold.');
+  }
+
+  // Condition: nozzle health and the bed (or build plate) a print sticks to.
+  let conditionHtml = '';
+  if (fdm || tc === 'resin') {
+    const bed = slot.bed ?? 1;
+    const bedWord = tc === 'resin' ? 'Build plate' : 'Bed';
+    const bedState = bed >= 0.95 ? 'clean and level' : bed >= 0.7 ? 'a little grubby' : 'greasy: prints may come loose';
+    const cleanBtn = `<button class="service-buy" data-act="cleanBed" data-slot="${manageSlotIdx}" ${isIdle && bed < 0.999 ? '' : 'disabled'}>${isIdle ? (bed < 0.999 ? 'Clean & level · free' : 'Clean') : busyLabel}</button>`;
+    conditionHtml += `
+      <div class="wear-bar-wrap">
+        <div class="wear-bar-label"><span>${bedWord}: <strong>${bedState}</strong></span><span class="muted">${Math.round(bed * 100)}%</span></div>
+        ${bar(bed * 100, bed >= 0.95 ? '#22c55e' : bed >= 0.7 ? '#fbbf24' : '#f97316')}
+        <div class="condition-action">${cleanBtn}</div>
+      </div>`;
+    if (fdm) {
+      const h = slot.nozzleHealth ?? 1;
+      const nozState = h >= 0.8 ? 'like new' : h >= 0.5 ? 'wearing' : 'worn: rough prints and clogs';
+      conditionHtml += `
+        <div class="wear-bar-wrap">
+          <div class="wear-bar-label"><span>Nozzle (${noz.label}): <strong>${nozState}</strong></span><span class="muted">${Math.round(h * 100)}% healthy</span></div>
+          ${bar(h * 100, h >= 0.8 ? '#22c55e' : h >= 0.5 ? '#fbbf24' : '#f97316')}
+          <div class="muted condition-note">Carbon-fiber and glass-filled filaments wear brass in about a third of a kilo; hardened steel lasts for kilograms.</div>
+        </div>`;
+    }
+  }
+
+  // Upgrades for this printer (extrusion machines only).
+  let upgradesHtml = '';
+  if (fdm && !printer.unknown) {
+    const cards = Sim.UPGRADES.filter(u => u.scope === 'printer').map(u => {
+      const builtIn = u.id === 'enclosure' ? printer.enclosed : !!printer.failureDetection;
+      const owned = Sim.hasUpgrade(slot, u.id);
+      const action = builtIn ? `<div class="nozzle-current">Built in</div>`
+        : owned ? `<div class="nozzle-current">Fitted</div>`
+        : `<button class="service-buy" data-act="buyUpgrade" data-arg="${u.id}" data-slot="${manageSlotIdx}" ${state.money >= u.cost ? '' : 'disabled'}>Fit ${fmtPrice(u.cost)}</button>`;
+      return `<div class="service-card upgrade-card${owned || builtIn ? ' owned' : ''}"><div class="service-name">${u.name}</div><div class="service-desc">${u.desc}</div>${action}</div>`;
+    }).join('');
+    upgradesHtml = `<div class="manage-section"><h3>Upgrades</h3><div class="service-grid">${cards}</div></div>`;
+  }
+
   // Maintenance section
   const ws = wearStatus(slot);
-  const serviceCardsHtml = SERVICE_OPTIONS.map(svc => {
+  const serviceCardsHtml = Sim.SERVICE_OPTIONS.map(svc => {
     const canAfford = state.money >= svc.cost;
     return `
       <div class="service-card">
         <div class="service-name">${svc.label}</div>
         <div class="service-desc">${svc.desc}</div>
-        <div class="service-effect">Clears ${svc.reduceWear === 9999 ? 'ALL' : `${svc.reduceWear}h`} of wear</div>
-        <button class="service-buy" onclick="window.performService(${manageSlotIdx}, '${svc.id}')" ${canAfford && isIdle ? '' : 'disabled'}>${isIdle ? `${fmtPrice(svc.cost)}` : 'Busy'}</button>
+        <div class="service-effect">Clears ${svc.reduceWear === 9999 ? 'all' : `${svc.reduceWear} h`} of wear</div>
+        <button class="service-buy" data-act="performService" data-slot="${manageSlotIdx}" data-arg="${svc.id}" ${canAfford && isIdle ? '' : 'disabled'}>${isIdle ? `${fmtPrice(svc.cost)}` : 'Busy'}</button>
       </div>
     `;
   }).join('');
@@ -857,64 +657,73 @@ function renderManage() {
     <div class="wear-bar-wrap">
       <div class="wear-bar-label">
         <span>Wear: <strong style="color: ${ws.color}">${ws.label}</strong></span>
-        <span class="muted">${(slot.wearHours||0).toFixed(1)}h since last service</span>
+        <span class="muted">${(slot.wearHours||0).toFixed(1)} h since last service</span>
       </div>
-      <div class="wear-bar"><div class="wear-bar-fill" style="width: ${ws.pct}%; background: ${ws.color}"></div></div>
+      ${bar(ws.pct, ws.color)}
     </div>
     <div class="service-grid">${serviceCardsHtml}</div>
   `;
 
-  // Nozzle picker
-  const nozzleHtml = NOZZLE_TYPES.map(noz => {
-    const isCurrent = (noz.size === slot.nozzleSize && noz.hardened === slot.nozzleHardened);
-    const eff = NOZZLE_EFFECTS[noz.size];
-    const speedTxt = `${eff.speed.toFixed(2)}× speed`;
-    const precTxt = `${eff.precision.toFixed(2)}× precision`;
-    const canAfford = state.money >= noz.cost;
-    const action = isCurrent
-      ? `<div class="nozzle-current">Currently installed</div>`
-      : `<button class="nozzle-buy" onclick="window.changeNozzle('${noz.id}')" ${canAfford && isIdle ? '' : 'disabled'}>${isIdle ? `Install ${fmtPrice(noz.cost)}` : 'Busy'}</button>`;
-    return `
-      <div class="nozzle-card${isCurrent ? ' current' : ''}">
-        <div class="nozzle-name">${noz.label}</div>
-        <div class="nozzle-desc">${noz.desc}</div>
-        <div class="nozzle-effects">${speedTxt} · ${precTxt}</div>
-        ${action}
-      </div>
-    `;
-  }).join('');
+  // Nozzle picker: extrusion printers only. Resin and powder machines show their hardware instead.
+  let nozzleSectionHtml = '';
+  if (fdm) {
+    const nozzleHtml = Sim.NOZZLE_TYPES.map(n => {
+      const isCurrent = n.id === noz.id;
+      const eff = Sim.NOZZLE_EFFECTS[n.size];
+      const canAfford = state.money >= n.cost;
+      const worn = isCurrent && (slot.nozzleHealth ?? 1) < 0.999;
+      const action = isCurrent && !worn
+        ? `<div class="nozzle-current">Currently installed</div>`
+        : `<button class="nozzle-buy" data-act="changeNozzle" data-arg="${n.id}" ${canAfford && isIdle ? '' : 'disabled'}>${isIdle ? `${worn ? 'Fit a fresh one' : 'Install'} ${fmtPrice(n.cost)}` : 'Busy'}</button>`;
+      return `
+        <div class="nozzle-card${isCurrent ? ' current' : ''}" data-nozzle="${n.id}">
+          <div class="nozzle-name">${n.label}</div>
+          <div class="nozzle-desc">${n.desc}</div>
+          <div class="nozzle-effects">${eff.speed.toFixed(2)}× speed · ${eff.precision.toFixed(2)}× precision</div>
+          ${action}
+        </div>
+      `;
+    }).join('');
+    nozzleSectionHtml = `
+      <div class="manage-section" id="manageNozzles">
+        <h3>Nozzle <span class="muted">— current: ${noz.label}</span></h3>
+        <div class="nozzle-grid">${nozzleHtml}</div>
+      </div>`;
+  } else if (!printer.unknown) {
+    const how = { resin: 'Resin printers have no nozzle: a light cures each whole layer at once, so time depends on how tall the parts are, not how many.',
+      powder: 'Powder-bed printers have no nozzle: they fuse each layer of powder, so a full bed takes as long as one part. Unused powder is mixed with fresh powder for the next build.',
+      metal: 'Metal powder-bed printers have no nozzle: a laser melts each layer of metal powder. Parts get a stress-relief bake afterwards.' }[tc] || '';
+    nozzleSectionHtml = `<div class="manage-section" id="manageHardware"><h3>Hardware <span class="muted">— ${Sim.hardwareLabel(printer)}</span></h3><div class="hardware-note">${how}</div></div>`;
+  }
 
   // Compatible materials list — show all the materials this printer can run
   const matsHtml = printer.materials.map(matId => {
     const mat = materialById(matId);
     if (!mat) return '';
     const stock = state.inventory[matId] || 0;
-    const requiresHard = ABRASIVE_MATERIALS.has(matId);
-    const hardOK = !requiresHard || slot.nozzleHardened;
-    const cls = hardOK ? 'mat-chip ok' : 'mat-chip warn';
-    const tip = requiresHard
-      ? (slot.nozzleHardened ? `${mat.name} — needs hardened nozzle ✓` : `${mat.name} — needs hardened nozzle (current: brass)`)
-      : `${mat.name}`;
-    return `<span class="${cls}" title="${tip}">${mat.name}${stock > 0 ? ` <span class="stock-num">${stock.toFixed(0)}g</span>` : ''}${requiresHard && !slot.nozzleHardened ? ' ⚠' : ''}</span>`;
+    const needsHard = fdm && Sim.isAbrasive(mat) && !Sim.isFiber(mat);
+    const blocked = needsHard && noz.size <= 0.2;
+    const cls = blocked ? 'mat-chip warn' : 'mat-chip ok';
+    const tip = needsHard ? `${mat.name}: abrasive, wears brass fast${blocked ? '; needs a 0.4 mm or bigger nozzle' : ''}` : mat.name;
+    return `<span class="${cls}" title="${esc(tip)}">${esc(mat.name)}${stock > 0 ? ` <span class="stock-num">${stock.toFixed(0)} g</span>` : ''}${blocked ? ' ⚠' : ''}</span>`;
   }).join('');
 
   document.getElementById('manageBody').innerHTML = `
     <div class="manage-section">
       <h3>Stats</h3>
-      ${statsHtml}
+      ${rows.join('')}
     </div>
-    <div class="manage-section">
-      <h3>Materials supported <span class="muted">— ${printer.materials.length} total</span></h3>
-      <div class="mat-chip-grid">${matsHtml}</div>
-    </div>
+    ${conditionHtml ? `<div class="manage-section" id="manageCondition"><h3>Condition</h3>${conditionHtml}</div>` : ''}
+    ${upgradesHtml}
     <div class="manage-section">
       <h3>Maintenance</h3>
       ${maintenanceHtml}
     </div>
-    <div class="manage-section">
-      <h3>Nozzle <span class="muted">— current: ${slot.nozzleSize}mm ${slot.nozzleHardened ? 'hardened' : 'brass'}</span></h3>
-      <div class="nozzle-grid">${nozzleHtml}</div>
-    </div>
+    ${nozzleSectionHtml}
+    ${printer.materials.length ? `<div class="manage-section">
+      <h3>Materials supported <span class="muted">— ${printer.materials.length} total</span></h3>
+      <div class="mat-chip-grid">${matsHtml}</div>
+    </div>` : ''}
     <div class="manage-section sell-section-wrap">
       <h3>Sell this printer</h3>
       <div class="sell-row">
@@ -922,14 +731,14 @@ function renderManage() {
           <div class="sell-price-display">${fmtPrice(sellAmt)}</div>
           <div class="sell-meta">
             Original: ${fmtPrice(slot.purchasePrice)} <span class="sep">·</span>
-            ${slot.totalHours.toFixed(1)} hrs used <span class="sep">·</span>
-            ${((sellAmt/slot.purchasePrice)*100).toFixed(0)}% of new
+            ${(slot.totalHours || 0).toFixed(1)} hrs used <span class="sep">·</span>
+            ${slot.purchasePrice ? ((sellAmt/slot.purchasePrice)*100).toFixed(0) : 0}% of new
           </div>
           <div class="sell-meta muted">Starts at 75% of new, drops with lifetime hours (floor 15%)</div>
         </div>
-        <button class="sell-button" onclick="window.sellPrinter()" ${(isIdle && !isOnly) ? '' : 'disabled'}>${
+        <button class="sell-button" data-act="sellPrinter" ${(isIdle && !isOnly) ? '' : 'disabled'}>${
           isOnly ? "Can't sell only printer" :
-          !isIdle ? "Currently printing" :
+          !isIdle ? busyLabel :
           'Sell'
         }</button>
       </div>
@@ -937,126 +746,110 @@ function renderManage() {
   `;
 }
 
+// One listener for every button the Manage modal draws (they call through window, like the
+// inline handlers elsewhere, so a wrapped window function still sees every press).
+function onManageClick(e) {
+  const b = e.target.closest('button[data-act]');
+  if (!b || b.disabled) return;
+  const slot = b.dataset.slot !== undefined ? Number(b.dataset.slot) : manageSlotIdx;
+  switch (b.dataset.act) {
+    case 'changeNozzle': window.changeNozzle(b.dataset.arg); break;
+    case 'performService': window.performService(slot, b.dataset.arg); break;
+    case 'buyUpgrade': window.buyUpgrade(b.dataset.arg, slot); break;
+    case 'cleanBed': window.cleanBed(slot); break;
+    case 'sellPrinter': window.sellPrinter(); break;
+  }
+}
+
 const ICON_FOR_CAT = { fdm: '⚙', resin: '✦', industrial: '▣' };
 
-// Cache of generated 3D thumbnails per printer id (data URLs)
-const shopThumbnails = new Map();
-let thumbnailGenerationInFlight = false;
-
-async function generateShopThumbnails() {
-  if (!window.THREE) return;
-  if (thumbnailGenerationInFlight) return;
-  thumbnailGenerationInFlight = true;
-  const canvas = document.createElement('canvas');
-  const W = 320, H = 240;
-  canvas.width = W * 2;
-  canvas.height = H * 2;
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-  renderer.setPixelRatio(2);
-  renderer.setSize(W, H, false);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
-  const sharedEnv = getEnvTexture(renderer);
-
-  for (const printer of printersCat) {
-    if (shopThumbnails.has(printer.id)) continue;
-    const scene = new THREE.Scene();
-    if (sharedEnv) scene.environment = sharedEnv;
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.42));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.1);
-    sun.position.set(8, 14, 8);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(512, 512);
-    sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 30;
-    sun.shadow.camera.left = -10; sun.shadow.camera.right = 10;
-    sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10;
-    sun.shadow.bias = -0.0008;
-    scene.add(sun);
-    const rim = new THREE.DirectionalLight(0xa8d0ff, 0.45);
-    rim.position.set(-5, 6, -10);
-    scene.add(rim);
-    const fill = new THREE.DirectionalLight(0xfff0e0, 0.25);
-    fill.position.set(2, 3, 12);
-    scene.add(fill);
-    const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
-    camera.position.set(7.5, 5.0, 8.5);
-    camera.lookAt(0, 2.0, 0);
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.7, metalness: 0.3 }));
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    scene.add(floor);
-
-    const cat = printerCategory(printer);
-    let group;
-    if (cat === 'fdm') group = buildFDM3D(printer);
-    else if (cat === 'resin') group = buildResin3D(printer);
-    else group = buildIndustrial3D(printer);
-    scene.add(group);
-
-    renderer.render(scene, camera);
-    shopThumbnails.set(printer.id, canvas.toDataURL('image/png'));
-
-    // Dispose this scene's resources
-    scene.traverse(obj => {
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) {
-        if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
-        else obj.material.dispose();
-      }
-    });
+// 3D pictures of each machine (blob URLs from the stage), filled in as they arrive.
+const shopThumbs = new Map();
+function requestShopThumbnails() {
+  if (!stage) return;
+  // Rows in view first: the current filter's order, then the rest.
+  const list = printersCat.slice().sort((a, b) => a.price - b.price);
+  const first = shopFilter === 'all' ? list : list.filter(p => p.tier === shopFilter).concat(list.filter(p => p.tier !== shopFilter));
+  for (const printer of first) {
+    if (shopThumbs.has(printer.id)) continue;
+    shopThumbs.set(printer.id, null);
+    stage.printerThumb(printer).then((url) => {
+      shopThumbs.set(printer.id, url);
+      if (document.getElementById('shopModal').classList.contains('open')) renderShop();
+    }, () => shopThumbs.delete(printer.id));
   }
-  renderer.dispose();
-  thumbnailGenerationInFlight = false;
+}
+
+// Rows are built once per printer and kept; a render only patches the buy button, the lock
+// state and the thumbnail when one of them actually changes.
+const shopRows = new Map();
+function shopRowFor(printer) {
+  let r = shopRows.get(printer.id);
+  if (r) return r;
+  const cat = printerCategory(printer);
+  const el = document.createElement('div');
+  el.className = 'shop-row';
+  el.dataset.printer = printer.id;
+  const matsBrief = (printer.materials || []).slice(0, 5).map(m => {
+    const mat = materialById(m);
+    return `<span class="mat-pill">${esc(mat ? mat.name : m)}</span>`;
+  }).join('');
+  const moreCount = printer.materials.length > 5 ? `<span class="mat-pill">+${printer.materials.length-5}</span>` : '';
+  const specs = `${printer.tech} <span class="sep">·</span> ${printer.buildVolumeMM.join('×')} mm <span class="sep">·</span> ${speedLabel(printer)} <span class="sep">·</span> ${(printer.baseReliability*100).toFixed(0)}% reliable`;
+  el.innerHTML = `
+    <div class="shop-icon ${cat}">${ICON_FOR_CAT[cat]}</div>
+    <div class="shop-row-info">
+      <div class="shop-row-line1">
+        <span class="brand">${esc(printer.brand)}</span>
+        <span class="model">${esc(printer.model)}</span>
+        <span class="printer-tier ${printer.tier}">${printer.tier}</span>
+      </div>
+      <div class="shop-row-line2">${specs}</div>
+      <div class="shop-row-line3">${matsBrief}${moreCount}</div>
+    </div>
+    <div class="shop-row-action">
+      <div class="shop-price">${fmtPrice(printer.price)}</div>
+      <button class="shop-buy" data-buy="${printer.id}"></button>
+    </div>
+  `;
+  r = { el, btn: el.querySelector('.shop-buy'), thumb: false, sig: '' };
+  shopRows.set(printer.id, r);
+  return r;
 }
 
 function renderShop() {
   const root = document.getElementById('shopList');
-  root.innerHTML = '';
   let list = printersCat.slice();
   if (shopFilter !== 'all') list = list.filter(p => p.tier === shopFilter);
   list.sort((a, b) => a.price - b.price);
-  list.forEach(printer => {
-    const repNeeded = TIER_UNLOCK_REP[printer.tier] || 0;
+  // Order and membership (only changes with the filter)
+  const want = list.map(p => shopRowFor(p).el);
+  if (root.children.length !== want.length || want.some((el, i) => root.children[i] !== el)) {
+    root.replaceChildren(...want);
+  }
+  for (const printer of list) {
+    const r = shopRowFor(printer);
+    const thumb = shopThumbs.get(printer.id);
+    if (thumb && !r.thumb) {
+      const img = document.createElement('img');
+      img.className = 'shop-thumb';
+      img.alt = `${printer.brand} ${printer.model}`;
+      img.src = thumb;
+      r.el.querySelector('.shop-icon').replaceWith(img);
+      r.thumb = true;
+    }
+    const repNeeded = Sim.TIER_UNLOCK_REP[printer.tier] || 0;
     const repOK = state.reputation >= repNeeded;
     const moneyOK = state.money >= printer.price;
-    const cat = printerCategory(printer);
-    const row = document.createElement('div');
-    row.className = 'shop-row' + (repOK && moneyOK ? '' : ' locked');
-    const matsBrief = (printer.materials || []).slice(0, 5).map(m => {
-      const mat = materialById(m);
-      return `<span class="mat-pill">${mat ? mat.name : m}</span>`;
-    }).join('');
-    const moreCount = printer.materials.length > 5 ? `<span class="mat-pill">+${printer.materials.length-5}</span>` : '';
-    const specs = `${printer.tech} <span class="sep">·</span> ${printer.buildVolumeMM.join('×')}mm <span class="sep">·</span> ${effectiveThroughput(printer)} g/hr <span class="sep">·</span> ${(printer.baseReliability*100).toFixed(0)}% reliable`;
-    const buttonContent =
-      !repOK ? `<button class="shop-buy" disabled>Need ${repNeeded} rep</button>` :
-      !moneyOK ? `<button class="shop-buy" disabled>${fmtPrice(printer.price - state.money)} short</button>` :
-      `<button class="shop-buy affordable" onclick="window.buyPrinter('${printer.id}')">Buy</button>`;
-    const thumb = shopThumbnails.get(printer.id);
-    const previewHtml = thumb
-      ? `<img class="shop-thumb" src="${thumb}" alt="${printer.brand} ${printer.model}">`
-      : `<div class="shop-icon ${cat}">${ICON_FOR_CAT[cat]}</div>`;
-    row.innerHTML = `
-      ${previewHtml}
-      <div class="shop-row-info">
-        <div class="shop-row-line1">
-          <span class="brand">${printer.brand}</span>
-          <span class="model">${printer.model}</span>
-          <span class="printer-tier ${printer.tier}">${printer.tier}</span>
-        </div>
-        <div class="shop-row-line2">${specs}</div>
-        <div class="shop-row-line3">${matsBrief}${moreCount}</div>
-      </div>
-      <div class="shop-row-action">
-        <div class="shop-price">${fmtPrice(printer.price)}</div>
-        ${buttonContent}
-      </div>
-    `;
-    root.appendChild(row);
-  });
+    const label = !repOK ? `Need ${repNeeded} rep` : !moneyOK ? `${fmtPrice(Math.ceil(printer.price - state.money))} short` : 'Buy';
+    const sig = `${repOK}|${moneyOK}|${label}`;
+    if (sig === r.sig) continue;
+    r.sig = sig;
+    r.el.classList.toggle('locked', !(repOK && moneyOK));
+    r.btn.textContent = label;
+    r.btn.disabled = !(repOK && moneyOK);
+    r.btn.classList.toggle('affordable', repOK && moneyOK);
+  }
 }
 
 // =====================================================================
@@ -1064,1330 +857,86 @@ function renderShop() {
 // =====================================================================
 function tick() {
   const now = Date.now();
-  const realDelta = (now - lastTickReal) / 1000;
+  let realDelta = (now - lastTickReal) / 1000;
   lastTickReal = now;
+  // A clock that jumped backwards does nothing, and a long gap (a sleeping laptop, a throttled
+  // background tab) counts as one second: the shop never races ahead while nobody watches.
+  if (!(realDelta > 0)) realDelta = 0;
+  realDelta = Math.min(realDelta, 1);
   const gameHours = realDelta * speed / REAL_SEC_PER_GAME_HOUR;
-
-  state.hour += gameHours;
-  while (state.hour >= 24) { state.hour -= 24; state.day += 1; }
-
-  for (const slot of state.printers) {
-    if (slot.state === 'printing' && slot.job) {
-      slot.job.hoursElapsed += gameHours;
-      slot.totalHours = (slot.totalHours || 0) + gameHours;
-      slot.wearHours = (slot.wearHours || 0) + gameHours;
-      if (slot.job.hoursElapsed >= slot.job.hoursTotal) completeJob(slot);
-    }
-  }
-
-  state.orders = state.orders.filter(o => {
-    o.deadlineHours -= gameHours;
-    return o.deadlineHours > 0;
-  });
-
-  state.nextOrderInHours -= gameHours;
-  if (state.nextOrderInHours <= 0) {
-    spawnOrder();
-    const repBoost = 1 + state.reputation * 0.01;
-    const printerBoost = 1 + (state.printers.length - 1) * 0.10;
-    state.nextOrderInHours = ORDER_SPAWN_BASE_HOURS / (repBoost * printerBoost) * (0.7 + Math.random() * 0.8);
-  }
-
+  const out = Sim.step(Cat, state, gameHours);
+  for (const k of Object.keys(out.dirty)) if (out.dirty[k]) dirty[k] = true;
+  if (out.dirty.money || out.dirty.printers) dirty.shop = true;
+  if (out.dirty.printers || out.dirty.money) dirty.manage = true;
+  handleEvents(out.events);
   render();
   saveState();
 }
 
 // =====================================================================
-// 3D rendering with Three.js
+// 3D: one shared renderer (docs/stage.js) draws every printer card, shop thumbnail and order part
 // =====================================================================
+const printerScenes = new Map();   // card canvas -> its view on the stage (one per printer card)
+let stage = null;                   // the stage once docs/stage.js has loaded; null without WebGL
 
-const printerScenes = new Map(); // canvas → scene info
-let cachedEnvTexture = null;     // shared PBR environment (procedural studio)
-
-// Helper: create a RoundedBoxGeometry (or fall back to Box if addon missing)
-function rbox(w, h, d, segs = 4, radius = 0.04) {
-  const RBG = window.RoundedBoxGeometry;
-  if (RBG) return new RBG(w, h, d, segs, radius);
-  return new THREE.BoxGeometry(w, h, d);
-}
-
-// Procedural room environment for PBR reflections — gives every metallic
-// surface real specular highlights instead of looking matte and dead.
-function getEnvTexture(renderer) {
-  if (cachedEnvTexture) return cachedEnvTexture;
-  if (!window.RoomEnvironment || !window.THREE) return null;
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  pmrem.compileEquirectangularShader();
-  const envScene = new window.RoomEnvironment(renderer);
-  cachedEnvTexture = pmrem.fromScene(envScene, 0.04).texture;
-  pmrem.dispose();
-  return cachedEnvTexture;
-}
-
-// Canvas-textured LCD screen — shows live readable content (brand, %, status)
-function makeLCDTexture(text1, text2, hue = 'green') {
-  const cv = document.createElement('canvas');
-  cv.width = 256; cv.height = 144;
-  const ctx = cv.getContext('2d');
-  // Dark green-tinted background like a real touchscreen UI
-  const bg = hue === 'green' ? '#0a3a2a' : (hue === 'cyan' ? '#0c4a6e' : '#1f2937');
-  const fg = hue === 'green' ? '#22c55e' : (hue === 'cyan' ? '#22d3ee' : '#fbbf24');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, cv.width, cv.height);
-  // Subtle scanline pattern
-  ctx.fillStyle = 'rgba(255,255,255,0.04)';
-  for (let y = 0; y < cv.height; y += 3) ctx.fillRect(0, y, cv.width, 1);
-  // Header bar
-  ctx.fillStyle = fg;
-  ctx.fillRect(0, 0, cv.width, 4);
-  // Title
-  ctx.fillStyle = fg;
-  ctx.font = 'bold 26px ui-monospace, Menlo, monospace';
-  ctx.textBaseline = 'top';
-  ctx.fillText(text1, 16, 16);
-  // Subtitle
-  ctx.font = '18px ui-monospace, Menlo, monospace';
-  ctx.fillStyle = fg + 'cc';
-  ctx.fillText(text2, 16, 52);
-  // Progress bar at bottom
-  ctx.fillStyle = '#1a1a1a';
-  ctx.fillRect(16, cv.height - 28, cv.width - 32, 12);
-  ctx.fillStyle = fg;
-  ctx.fillRect(16, cv.height - 28, (cv.width - 32) * 0.6, 12);
-  // Footer text
-  ctx.font = '14px ui-monospace, Menlo, monospace';
-  ctx.fillStyle = fg + '99';
-  ctx.fillText('PRINTING', 16, cv.height - 14);
-  ctx.fillText('60%', cv.width - 50, cv.height - 14);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-function createScene(canvas, printer) {
-  const THREE = window.THREE;
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.localClippingEnabled = true;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
-
-  const scene = new THREE.Scene();
-  scene.background = null;
-
-  // PBR environment — gives all metallic/glossy parts proper specular reflections
-  const env = getEnvTexture(renderer);
-  if (env) scene.environment = env;
-
-  // Lighting — warm key + cool rim + soft fill
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xb0c4de, 0.42));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.1);
-  sun.position.set(8, 14, 8);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
-  sun.shadow.camera.near = 0.5;
-  sun.shadow.camera.far = 40;
-  sun.shadow.camera.left = -10;
-  sun.shadow.camera.right = 10;
-  sun.shadow.camera.top = 10;
-  sun.shadow.camera.bottom = -10;
-  sun.shadow.bias = -0.0008;
-  scene.add(sun);
-  // Rim light from behind for edge definition
-  const rim = new THREE.DirectionalLight(0xa8d0ff, 0.45);
-  rim.position.set(-5, 6, -10);
-  scene.add(rim);
-  // Soft front fill
-  const fill = new THREE.DirectionalLight(0xfff0e0, 0.25);
-  fill.position.set(2, 3, 12);
-  scene.add(fill);
-
-  // Camera at 3/4 view, slightly closer for clearer printer detail
-  const aspect = canvas.clientWidth / canvas.clientHeight;
-  const camera = new THREE.PerspectiveCamera(38, aspect, 0.1, 100);
-  camera.position.set(7.5, 5.0, 8.5);
-  camera.lookAt(0, 2.0, 0);
-
-  // Floor / workshop ground — brushed dark metal table
-  const floorGeo = new THREE.PlaneGeometry(40, 40);
-  const floorMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1a22, roughness: 0.7, metalness: 0.3,
-  });
-  const floor = new THREE.Mesh(floorGeo, floorMat);
-  floor.rotation.x = -Math.PI / 2;
-  floor.receiveShadow = true;
-  scene.add(floor);
-
-  // Build the printer
-  const cat = printerCategory(printer);
-  let group;
-  if (cat === 'fdm') group = buildFDM3D(printer);
-  else if (cat === 'resin') group = buildResin3D(printer);
-  else group = buildIndustrial3D(printer);
-  scene.add(group);
-
-  return {
-    renderer, scene, camera, group,
-    printerId: printer.id,
-    modelMesh: null,
-    modelJobId: null,
-    modelClipPlane: null,
-  };
-}
-
-function ensureScene(canvas, slot) {
-  if (!window.THREE) return null;
-  const printer = printerById(slot.printerId);
-  if (!printer) return null;
-  let info = printerScenes.get(canvas);
-  if (info && info.printerId !== printer.id) {
-    info.renderer.dispose();
-    info = null;
-    printerScenes.delete(canvas);
-  }
-  if (!info) {
-    info = createScene(canvas, printer);
-    printerScenes.set(canvas, info);
-  }
-  // Resize if canvas dims changed
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  if (w > 0 && h > 0 && (info.renderer.domElement.width !== w * info.renderer.getPixelRatio() || info.renderer.domElement.height !== h * info.renderer.getPixelRatio())) {
-    info.renderer.setSize(w, h, false);
-    info.camera.aspect = w / h;
-    info.camera.updateProjectionMatrix();
-  }
-  return info;
-}
-
-// ---------------------------------------------------------------------
-// FDM / FFF (Cartesian or CoreXY)
-// ---------------------------------------------------------------------
-// Helper: NEMA 17 stepper motor
-function makeStepperMotor(THREE, mat, capMat, scale = 1.0) {
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.7*scale, 0.7*scale, 0.7*scale), mat);
-  body.castShadow = true;
-  g.add(body);
-  // Front face cap with shaft (lighter color)
-  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.55*scale, 0.55*scale, 0.05*scale), capMat);
-  cap.position.z = 0.36*scale;
-  g.add(cap);
-  // Output shaft
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05*scale, 0.05*scale, 0.3*scale, 12), capMat);
-  shaft.rotation.x = Math.PI/2;
-  shaft.position.z = 0.5*scale;
-  g.add(shaft);
-  // Mounting holes (4 small pegs visible at corners)
-  for (const [dx, dy] of [[-0.27, -0.27], [0.27, -0.27], [-0.27, 0.27], [0.27, 0.27]]) {
-    const peg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 6), capMat);
-    peg.rotation.x = Math.PI/2;
-    peg.position.set(dx*scale, dy*scale, 0.36*scale);
-    g.add(peg);
-  }
-  return g;
-}
-
-function buildFDM3D(printer) {
-  const THREE = window.THREE;
-  const group = new THREE.Group();
-  const colors = BRAND_COLORS[printer.brand] || { frame: 0x444444, accent: 0x222222, panel: 0x222222 };
-  const frameColor = colors.frame;
-  const accentColor = colors.accent;
-  const panelColor = colors.panel;
-
-  // Determine chassis style — cantilever (Ender, Sovol, A1) vs cube (CoreXY, enclosed)
-  const cantileverIds = new Set([
-    'ender-3-v3-se', 'anycubic-kobra-2-neo', 'elegoo-neptune-4', 'sovol-sv06-plus',
-    'bambu-a1-mini', 'bambu-a1-ams-lite', 'prusa-mk4s',
-  ]);
-  const isCantilever = cantileverIds.has(printer.id);
-
-  // Common materials
-  const stepperMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.45, metalness: 0.6 });
-  const stepperCapMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.85 });
-  const beltMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.85, metalness: 0.0 });
-  const leadMat = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.4, metalness: 0.85 });
-  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.2, metalness: 0.95 });
-  const wireMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7 });
-  const tubeMat = new THREE.MeshStandardMaterial({ color: 0xfafafa, roughness: 0.5 });
-  const knobMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.7 });
-
-  // ---- ELECTRONICS BASE (clearcoat painted plastic) ----
-  const baseMat = new THREE.MeshPhysicalMaterial({
-    color: 0x111827, roughness: 0.4, metalness: 0.2,
-    clearcoat: 0.6, clearcoatRoughness: 0.18,
-    envMapIntensity: 1.0
-  });
-  const base = new THREE.Mesh(rbox(5.5, 0.6, 4.2, 4, 0.06), baseMat);
-  base.position.set(0, 0.3, 0);
-  base.castShadow = true;
-  base.receiveShadow = true;
-  group.add(base);
-  // Vent grilles on side
-  for (let i = 0; i < 6; i++) {
-    const slat = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.5), beltMat);
-    slat.position.set(2.78, 0.18 + i*0.09, 0);
-    group.add(slat);
-  }
-  // Power inlet on the back (small box)
-  const inletMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.6, metalness: 0.4 });
-  const inlet = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.08), inletMat);
-  inlet.position.set(-1.5, 0.4, -2.13);
-  group.add(inlet);
-
-  // ---- Y-AXIS CARRIER + RAILS + STEPPER + BELT ----
-  const carrierMat = new THREE.MeshStandardMaterial({ color: panelColor, roughness: 0.6, metalness: 0.3 });
-  const carrier = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.12, 4.3), carrierMat);
-  carrier.position.set(0, 0.66, 0);
-  carrier.receiveShadow = true;
-  group.add(carrier);
-  // Y-axis linear guide rails (chrome rods on each side)
-  for (const xPos of [-1.95, 1.95]) {
-    const yRail = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 4.2, 12), chromeMat);
-    yRail.rotation.x = Math.PI / 2;
-    yRail.position.set(xPos, 0.74, 0);
-    group.add(yRail);
-  }
-  // Y-axis stepper motor at the back
-  const yStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.85);
-  yStepper.position.set(0, 0.5, -2.4);
-  yStepper.rotation.y = Math.PI;
-  group.add(yStepper);
-  // Y-axis belt (visible black rubber loop along axis)
-  for (const xPos of [-0.5, 0.5]) {
-    const yBelt = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 4.0), beltMat);
-    yBelt.position.set(xPos, 0.62, 0);
-    group.add(yBelt);
-  }
-
-  // ---- HEATED BED + PEI + LEVELING WHEELS ----
-  const bedMat = new THREE.MeshPhysicalMaterial({
-    color: 0x0f172a, roughness: 0.45, metalness: 0.5,
-    envMapIntensity: 0.9
-  });
-  const bed = new THREE.Mesh(rbox(4.0, 0.10, 4.0, 3, 0.03), bedMat);
-  bed.position.set(0, 0.77, 0);
-  bed.castShadow = true;
-  bed.receiveShadow = true;
-  group.add(bed);
-  // PEI textured spring steel surface — slight metallic sheen
-  const peiMat = new THREE.MeshPhysicalMaterial({
-    color: 0x1e293b, roughness: 0.65, metalness: 0.55,
-    envMapIntensity: 0.8
-  });
-  const pei = new THREE.Mesh(rbox(3.95, 0.04, 3.95, 2, 0.02), peiMat);
-  pei.position.set(0, 0.84, 0);
-  pei.receiveShadow = true;
-  group.add(pei);
-  // Bed handle clip on the front edge
-  const clipMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.5 });
-  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.15), clipMat);
-  clip.position.set(0, 0.84, 1.95);
-  group.add(clip);
-  // Bed leveling wheels (4 colored knurled wheels at corners)
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0xfb923c, roughness: 0.55, metalness: 0.2 });
-  for (const [wx, wz] of [[-1.85, -1.85], [1.85, -1.85], [-1.85, 1.85], [1.85, 1.85]]) {
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.08, 16), wheelMat);
-    wheel.position.set(wx, 0.7, wz);
-    wheel.castShadow = true;
-    group.add(wheel);
-  }
-  // Heater wires (red) hanging from bed back
-  const heaterWireMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.6 });
-  const heaterWire = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.6, 8), heaterWireMat);
-  heaterWire.position.set(0, 0.45, -2.0);
-  group.add(heaterWire);
-
-  // Frame — posts and top crossbar
-  const postMat = new THREE.MeshStandardMaterial({ color: frameColor, roughness: 0.45, metalness: 0.5 });
-  const postH = 3.5;  // tighter proportions, less empty space at top
-  const postGeo = new THREE.BoxGeometry(0.28, postH, 0.28);
-
-  let postPositions;
-  if (isCantilever) {
-    // 2 thick back posts (40×40 extrusion look)
-    postPositions = [[-2.0, postH/2 + 0.6, -1.85], [2.0, postH/2 + 0.6, -1.85]];
-    const backPostGeo = new THREE.BoxGeometry(0.4, postH, 0.4);
-    postPositions.forEach(([x, y, z]) => {
-      const post = new THREE.Mesh(backPostGeo, postMat);
-      post.position.set(x, y, z);
-      post.castShadow = true;
-      group.add(post);
+// Load the stage after the page has drawn; without it the cards keep their plain background.
+async function startStage() {
+  if (!window.THREE || !window.LineSegments2 || !window.mergeGeometries) return null;
+  try {
+    const mod = await import('./stage.js?v=' + encodeURIComponent(BUILD));
+    stage = await mod.createStage({
+      THREE: window.THREE, build: BUILD, Sim, cat: Cat, getState: () => state, brandColors: BRAND_COLORS,
+      clock: {
+        speed: () => speed,
+        secondsPerGameHour: REAL_SEC_PER_GAME_HOUR,
+        // Game hours since the last tick, so motion is smooth between quarter-second ticks.
+        hoursSinceTick: () => Math.max(0, Math.min(TICK_MS * 2, Date.now() - lastTickReal)) / 1000 * speed / REAL_SEC_PER_GAME_HOUR,
+      },
+      RoomEnvironment: window.RoomEnvironment, RoundedBoxGeometry: window.RoundedBoxGeometry, mergeGeometries: window.mergeGeometries,
+      Line2: window.Line2, LineMaterial: window.LineMaterial, LineGeometry: window.LineGeometry,
+      LineSegments2: window.LineSegments2, LineSegmentsGeometry: window.LineSegmentsGeometry,
     });
-    // Top crossbar between back posts
-    const cross = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.4, 0.4), postMat);
-    cross.position.set(0, postH + 0.6, -1.85);
-    cross.castShadow = true;
-    group.add(cross);
-    // ---- Z-AXIS LEAD SCREW + STEPPER (right back post) ----
-    const leadScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, postH - 0.4, 16), leadMat);
-    leadScrew.position.set(1.6, postH/2 + 0.6, -1.85);
-    group.add(leadScrew);
-    // Coupler (small black cylinder between motor and screw)
-    const couplerMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4, metalness: 0.7 });
-    const coupler = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.22, 12), couplerMat);
-    coupler.position.set(1.6, 0.78, -1.85);
-    group.add(coupler);
-    // Z-axis stepper motor at the bottom of the lead screw
-    const zStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.85);
-    zStepper.rotation.x = Math.PI / 2;
-    zStepper.position.set(1.6, 0.45, -1.85);
-    group.add(zStepper);
-    // Endstop sensor at the top of left post
-    const endstopMat = new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.5 });
-    const endstop = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.08), endstopMat);
-    endstop.position.set(-2.0, 1.0, -1.65);
-    group.add(endstop);
-  } else {
-    // 4 corner posts (cube / CoreXY)
-    postPositions = [
-      [-2.3, postH/2 + 0.6, -1.95], [2.3, postH/2 + 0.6, -1.95],
-      [-2.3, postH/2 + 0.6, 1.95],  [2.3, postH/2 + 0.6, 1.95],
-    ];
-    postPositions.forEach(([x, y, z]) => {
-      const post = new THREE.Mesh(postGeo, postMat);
-      post.position.set(x, y, z);
-      post.castShadow = true;
-      group.add(post);
-    });
-    // Top frame
-    const topY = postH + 0.6;
-    const tx = new THREE.BoxGeometry(4.7, 0.28, 0.28);
-    const tz = new THREE.BoxGeometry(0.28, 0.28, 4.18);
-    [[0, topY, -1.95, 'x'], [0, topY, 1.95, 'x'], [-2.3, topY, 0, 'z'], [2.3, topY, 0, 'z']].forEach(([x, y, z, axis]) => {
-      const m = new THREE.Mesh(axis === 'x' ? tx : tz, postMat);
-      m.position.set(x, y, z);
-      m.castShadow = true;
-      group.add(m);
-    });
-    // ---- DUAL Z-AXIS LEAD SCREWS + DUAL STEPPERS (CoreXY style) ----
-    for (const xPos of [-1.95, 1.95]) {
-      const leadScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, postH - 0.4, 16), leadMat);
-      leadScrew.position.set(xPos, postH/2 + 0.6, -1.6);
-      group.add(leadScrew);
-      const zStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.8);
-      zStepper.rotation.x = Math.PI / 2;
-      zStepper.position.set(xPos, 0.45, -1.6);
-      group.add(zStepper);
-    }
+  } catch (e) {
+    console.warn('[Print3D] 3D view unavailable:', e && e.message ? e.message : e);
+    stage = null;
   }
-
-  // ---- Z-Carriage: gantry rail + print head (moves UP as model grows) ----
-  const zCarriage = new THREE.Group();
-
-  // Gantry rail (horizontal, X-axis)
-  const railMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.25, metalness: 0.85 });
-  const rail = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.16, 0.35), railMat);
-  rail.position.set(0, 0, isCantilever ? -1.55 : 0);
-  rail.castShadow = true;
-  zCarriage.add(rail);
-  // Second guide rod (parallel, smaller)
-  const rail2 = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.4, 12), railMat);
-  rail2.rotation.z = Math.PI / 2;
-  rail2.position.set(0, -0.3, isCantilever ? -1.55 : 0);
-  rail2.castShadow = true;
-  zCarriage.add(rail2);
-  // X-axis stepper motor — attached to the LEFT end of the rail so it travels with the gantry
-  const xStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.7);
-  xStepper.rotation.y = Math.PI / 2;
-  xStepper.position.set(-2.4, 0, isCantilever ? -1.55 : 0);
-  zCarriage.add(xStepper);
-
-  // ---- PRINT HEAD ASSEMBLY (saddle ON rail → mount arm → shroud → nozzle) ----
-  // Visual chain: every part connects so nothing floats in mid-air.
-  const headGroup = new THREE.Group();
-  const carriageMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5, metalness: 0.6 });
-  const headMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.45, metalness: 0.4 });
-  const heatsinkMat = new THREE.MeshStandardMaterial({ color: 0xa8a8a8, roughness: 0.25, metalness: 0.95 });
-  const heaterMat = new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.4, metalness: 0.85 });
-  const nozMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.3, metalness: 0.9 });
-  const fanShellMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.55, metalness: 0.3 });
-  const fanGrillMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
-
-  // For cantilever: rail sits BEHIND (local z=-0.55), head body extends FORWARD over bed center (local z=1.0).
-  // For cube: rail and body are at the same z (=0). headGroup origin always lands on the rail in world space.
-  const railLocZ = isCantilever ? -0.55 : 0;
-  const bodyLocZ = isCantilever ?  1.00 : 0;
-
-  // 1. Saddle — wraps the rail (visibly hugs the rail in Y and Z)
-  const saddle = new THREE.Mesh(rbox(0.95, 0.55, 0.62, 3, 0.05), carriageMat);
-  saddle.position.set(0, 0.0, railLocZ);
-  saddle.castShadow = true;
-  headGroup.add(saddle);
-
-  // 2. Cantilever mount arm — clearly bridges from saddle (at rail) to the shroud (over bed)
-  const headShellMat = new THREE.MeshPhysicalMaterial({
-    color: accentColor, roughness: 0.35, metalness: 0.15,
-    clearcoat: 0.7, clearcoatRoughness: 0.15
-  });
-  if (isCantilever) {
-    const armLen = bodyLocZ - railLocZ;  // 1.55 units
-    const arm = new THREE.Mesh(rbox(0.55, 0.25, armLen, 2, 0.03), carriageMat);
-    arm.position.set(0, 0.05, (railLocZ + bodyLocZ) / 2);
-    arm.castShadow = true;
-    headGroup.add(arm);
-  }
-
-  // 3. Head shroud (accent-colored) — DIRECTLY UNDERNEATH the saddle, overlapping in Y so there's NO visible gap.
-  const headBody = new THREE.Mesh(rbox(0.85, 0.75, 0.55, 3, 0.05), headShellMat);
-  headBody.position.set(0, -0.42, bodyLocZ);   // top at -0.045, bottom at -0.795 (saddle bottom at -0.275 → real overlap)
-  headBody.castShadow = true;
-  headGroup.add(headBody);
-  // Top connecting collar — fills any visible gap between saddle and shroud
-  const collar = new THREE.Mesh(rbox(0.78, 0.18, 0.52, 2, 0.03), headShellMat);
-  collar.position.set(0, -0.05, bodyLocZ);
-  headGroup.add(collar);
-
-  // 4. Heatsink fins under the shroud
-  for (let i = 0; i < 3; i++) {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.04, 0.38), heatsinkMat);
-    fin.position.set(0, -0.58 - i * 0.06, bodyLocZ);
-    headGroup.add(fin);
-  }
-
-  // 5. Heater block
-  const heater = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.18, 0.28), heaterMat);
-  heater.position.set(0, -0.82, bodyLocZ);
-  heater.castShadow = true;
-  headGroup.add(heater);
-
-  // 6. Brass nozzle pointing down
-  const noz = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.14, 16), nozMat);
-  noz.rotation.x = Math.PI;
-  noz.position.set(0, -1.0, bodyLocZ);
-  headGroup.add(noz);
-
-  // 7. Front cooling fan
-  const fanShell = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.4, 0.14), fanShellMat);
-  fanShell.position.set(0, -0.22, bodyLocZ + 0.32);
-  fanShell.castShadow = true;
-  headGroup.add(fanShell);
-  const fanGrill = new THREE.Mesh(new THREE.CircleGeometry(0.14, 16), fanGrillMat);
-  fanGrill.position.set(0, -0.22, bodyLocZ + 0.39);
-  headGroup.add(fanGrill);
-
-  // Position the headGroup so the saddle sits ON the gantry rail.
-  // For cantilever, rail is at zCarriage local z=-1.55, so headGroup local z=-1.0
-  // puts saddle (local z=-0.55) at world z=-1.55. Body lands at world z=0 (bed center).
-  if (isCantilever) headGroup.position.z = -1.0;
-  zCarriage.add(headGroup);
-
-  // Position the carriage in the printer's coordinate space
-  const bedY = 0.86;  // top of PEI surface
-  const carriageMinY = bedY + 0.95;  // resting position (just above the bed)
-  const carriageMaxY = postH + 0.4;   // ceiling
-  zCarriage.position.set(0, carriageMinY, 0);
-  group.add(zCarriage);
-
-  // ---- REALISTIC FILAMENT SPOOL (two flanges + wound filament + hub) ----
-  const spoolY = postH + 1.0;
-  const spoolZ = isCantilever ? -1.85 : 0;
-  const spoolGroup = new THREE.Group();
-  // Two side flanges (cardboard / black plastic look)
-  const flangeMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.8, metalness: 0.0 });
-  const flangeGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.04, 32);
-  const flangeL = new THREE.Mesh(flangeGeo, flangeMat);
-  flangeL.position.x = -0.32;
-  flangeL.rotation.z = Math.PI / 2;
-  flangeL.castShadow = true;
-  spoolGroup.add(flangeL);
-  const flangeR = new THREE.Mesh(flangeGeo, flangeMat);
-  flangeR.position.x = 0.32;
-  flangeR.rotation.z = Math.PI / 2;
-  flangeR.castShadow = true;
-  spoolGroup.add(flangeR);
-  // Wound filament (orange) between the flanges
-  const filMat = new THREE.MeshStandardMaterial({ color: 0xfb923c, roughness: 0.6, metalness: 0.05 });
-  const filGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.6, 32);
-  const fil = new THREE.Mesh(filGeo, filMat);
-  fil.rotation.z = Math.PI / 2;
-  fil.castShadow = true;
-  spoolGroup.add(fil);
-  // Layered winding rings on the side flange (visible filament rings)
-  for (let i = 0; i < 5; i++) {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.3 + i * 0.05, 0.012, 6, 24), filMat);
-    ring.rotation.y = Math.PI / 2;
-    ring.position.x = -0.305;
-    spoolGroup.add(ring);
-  }
-  // Cardboard tube core through center
-  const coreMat = new THREE.MeshStandardMaterial({ color: 0x6b5a3b, roughness: 0.85 });
-  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.66, 24), coreMat);
-  core.rotation.z = Math.PI / 2;
-  spoolGroup.add(core);
-  // Spool holder rod through hub
-  const rodMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.85 });
-  const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.0, 16), rodMat);
-  rod.rotation.z = Math.PI / 2;
-  spoolGroup.add(rod);
-  spoolGroup.position.set(0, spoolY, spoolZ);
-  group.add(spoolGroup);
-  // Support arm bracket (L-shape) connecting spool to frame
-  const armMat = postMat;
-  const armV = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), armMat);
-  armV.position.set(0, spoolY - 0.5, spoolZ);
-  group.add(armV);
-
-  // ---- LCD on the electronics base — live canvas-textured screen ----
-  const lcdHue = printer.brand === 'Bambu Lab' ? 'green' :
-                 printer.brand === 'Prusa Research' ? 'amber' : 'cyan';
-  const lcdTex = makeLCDTexture(printer.brand.toUpperCase().slice(0, 8), printer.model.slice(0, 12), lcdHue);
-  const lcdBezel = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4, metalness: 0.3 });
-  const bezel = new THREE.Mesh(rbox(1.45, 0.62, 0.05, 2, 0.02), lcdBezel);
-  bezel.position.set(0.7, 0.45, 2.10);
-  group.add(bezel);
-  const lcdMat = new THREE.MeshStandardMaterial({
-    map: lcdTex, emissive: 0xffffff, emissiveMap: lcdTex,
-    emissiveIntensity: 0.85, roughness: 0.2, metalness: 0.0
-  });
-  const lcd = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.5), lcdMat);
-  lcd.position.set(0.7, 0.45, 2.135);
-  group.add(lcd);
-  // Knob next to LCD
-  const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.08, 24), knobMat);
-  knob.rotation.x = Math.PI / 2;
-  knob.position.set(1.7, 0.45, 2.13);
-  group.add(knob);
-  // Brand badge on the base
-  const badgeMat = new THREE.MeshStandardMaterial({
-    color: accentColor, emissive: accentColor, emissiveIntensity: 0.25, roughness: 0.3
-  });
-  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.16, 0.03), badgeMat);
-  badge.position.set(-1.6, 0.45, 2.13);
-  group.add(badge);
-
-  // ---- Solid enclosure shell with glass front door (cube/CoreXY only) ----
-  if (printer.enclosed && !isCantilever) {
-    // Outer panels — clearcoat painted plastic for that premium-printer look
-    const shellMat = new THREE.MeshPhysicalMaterial({
-      color: frameColor, roughness: 0.32, metalness: 0.18,
-      clearcoat: 0.65, clearcoatRoughness: 0.12,
-      envMapIntensity: 1.0
-    });
-    const wallY = postH/2 + 0.6;
-    const wallH = postH - 0.1;
-    // Back wall
-    const back = new THREE.Mesh(rbox(4.5, wallH, 0.06, 2, 0.02), shellMat);
-    back.position.set(0, wallY, -1.93);
-    back.castShadow = true;
-    back.receiveShadow = true;
-    group.add(back);
-    // Left + right walls
-    const leftW = new THREE.Mesh(rbox(0.06, wallH, 3.78, 2, 0.02), shellMat);
-    leftW.position.set(-2.27, wallY, 0);
-    leftW.castShadow = true;
-    leftW.receiveShadow = true;
-    group.add(leftW);
-    const rightW = new THREE.Mesh(rbox(0.06, wallH, 3.78, 2, 0.02), shellMat);
-    rightW.position.set(2.27, wallY, 0);
-    rightW.castShadow = true;
-    rightW.receiveShadow = true;
-    group.add(rightW);
-    // Top panel (rounded edges)
-    const topPanel = new THREE.Mesh(rbox(4.5, 0.08, 3.78, 3, 0.03), shellMat);
-    topPanel.position.set(0, postH + 0.55, 0);
-    topPanel.castShadow = true;
-    topPanel.receiveShadow = true;
-    group.add(topPanel);
-    // Visible bolt heads at panel corners (4 small chrome cylinders on the back)
-    const boltMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.25, metalness: 0.95 });
-    [[-2.0, 1.0, -1.96], [2.0, 1.0, -1.96], [-2.0, postH+0.1, -1.96], [2.0, postH+0.1, -1.96]].forEach(([x, y, z]) => {
-      const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8), boltMat);
-      bolt.rotation.x = Math.PI / 2;
-      bolt.position.set(x, y, z);
-      group.add(bolt);
-    });
-    // Brand-color accent strip along the top front edge (Bambu green, BCN3D teal, Markforged gold, etc.)
-    const accentStripMat = new THREE.MeshStandardMaterial({
-      color: accentColor, emissive: accentColor, emissiveIntensity: 0.3, roughness: 0.4
-    });
-    const accentStrip = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.08, 0.04), accentStripMat);
-    accentStrip.position.set(0, postH + 0.55, 1.92);
-    group.add(accentStrip);
-    // Glass front door — see-through to the bed/gantry inside
-    const glassMat = new THREE.MeshPhysicalMaterial({
-      color: 0xc7e5ff, transparent: true, opacity: 0.32,
-      roughness: 0.05, metalness: 0.0, transmission: 0.7, thickness: 0.05,
-      side: THREE.DoubleSide
-    });
-    const door = new THREE.Mesh(new THREE.PlaneGeometry(4.3, wallH - 0.4), glassMat);
-    door.position.set(0, wallY - 0.05, 1.93);
-    group.add(door);
-    // Door frame trim (dark thin strips top and bottom of glass)
-    const trimMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.5, metalness: 0.5 });
-    const trimTop = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.06, 0.05), trimMat);
-    trimTop.position.set(0, postH + 0.35, 1.94);
-    group.add(trimTop);
-    const trimBot = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.06, 0.05), trimMat);
-    trimBot.position.set(0, 0.85, 1.94);
-    group.add(trimBot);
-    // Door handle (right side)
-    const handleMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.85 });
-    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 0.08), handleMat);
-    handle.position.set(2.0, wallY, 1.97);
-    group.add(handle);
-  }
-
-  group.userData.zCarriage = zCarriage;
-  group.userData.headGroup = headGroup;
-  group.userData.zCarriageMinY = carriageMinY;
-  group.userData.zCarriageMaxY = carriageMaxY;
-  group.userData.bedY = bedY;
-  group.userData.bedHalfSize = 1.85;
-  group.userData.isCantilever = isCantilever;
-  return group;
+  return stage;
 }
 
-// ---------------------------------------------------------------------
-// Resin (MSLA / SLA)
-// ---------------------------------------------------------------------
-function buildResin3D(printer) {
-  const THREE = window.THREE;
-  const group = new THREE.Group();
-  const colors = BRAND_COLORS[printer.brand] || { frame: 0x222222, accent: 0xa855f7, panel: 0x111827 };
-
-  const stepperMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.45, metalness: 0.6 });
-  const stepperCapMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.85 });
-  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.2, metalness: 0.95 });
-  const blackMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.55, metalness: 0.3 });
-
-  // ---- ELECTRONICS BASE (where the LCD touchscreen lives) ----
-  const baseMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.55, metalness: 0.4 });
-  const electBase = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.7, 3.4), baseMat);
-  electBase.position.set(0, 0.35, 0);
-  electBase.castShadow = true;
-  electBase.receiveShadow = true;
-  group.add(electBase);
-  // Vent grilles on the side
-  for (let i = 0; i < 5; i++) {
-    const slat = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.4), blackMat);
-    slat.position.set(1.72, 0.18 + i*0.10, 0);
-    group.add(slat);
-  }
-
-  // ---- LCD TOUCHSCREEN on front ----
-  const bezelMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4, metalness: 0.0 });
-  const bezel = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.55, 0.05), bezelMat);
-  bezel.position.set(0, 0.4, 1.74);
-  group.add(bezel);
-  const screenMat = new THREE.MeshStandardMaterial({
-    color: 0x111111, roughness: 0.1, metalness: 0.0,
-    emissive: 0x22d3ee, emissiveIntensity: 0.65
-  });
-  const screen = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.45, 0.06), screenMat);
-  screen.position.set(0, 0.4, 1.76);
-  group.add(screen);
-  // Brand badge
-  const badgeMat = new THREE.MeshStandardMaterial({
-    color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.4, roughness: 0.3
-  });
-  const badge = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.14, 0.03), badgeMat);
-  badge.position.set(0, 0.78, 1.76);
-  group.add(badge);
-
-  // ---- INNER CABINET BODY (above the electronics base) ----
-  const cabMat = new THREE.MeshStandardMaterial({ color: colors.frame, roughness: 0.5, metalness: 0.45 });
-  const cab = new THREE.Mesh(new THREE.BoxGeometry(3.4, 4.0, 3.4), cabMat);
-  cab.position.set(0, 2.75, 0);
-  cab.castShadow = true;
-  cab.receiveShadow = true;
-  group.add(cab);
-
-  // ---- LIFT-OFF UV COVER (translucent yellow/orange — like a real MSLA hood) ----
-  const coverMat = new THREE.MeshPhysicalMaterial({
-    color: 0xff8c00, transparent: true, opacity: 0.42,
-    roughness: 0.1, metalness: 0.0, transmission: 0.5, thickness: 0.05
-  });
-  // 4 walls + roof of the lift-off hood
-  const sideX = new THREE.PlaneGeometry(3.0, 3.6);
-  const sideZ = new THREE.PlaneGeometry(3.0, 3.6);
-  const front = new THREE.Mesh(sideX, coverMat); front.position.set(0, 2.75, 1.71); front.material.side = THREE.DoubleSide; group.add(front);
-  const back = new THREE.Mesh(sideX, coverMat); back.position.set(0, 2.75, -1.71); back.rotation.y = Math.PI; back.material.side = THREE.DoubleSide; group.add(back);
-  const left = new THREE.Mesh(sideZ, coverMat); left.position.set(-1.71, 2.75, 0); left.rotation.y = Math.PI/2; left.material.side = THREE.DoubleSide; group.add(left);
-  const right = new THREE.Mesh(sideZ, coverMat); right.position.set(1.71, 2.75, 0); right.rotation.y = -Math.PI/2; right.material.side = THREE.DoubleSide; group.add(right);
-  const top = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 3.0), coverMat);
-  top.position.set(0, 4.55, 0);
-  top.rotation.x = Math.PI/2;
-  top.material.side = THREE.DoubleSide;
-  group.add(top);
-  // Cover handle on top
-  const handleMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.3, metalness: 0.7 });
-  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.12, 0.18), handleMat);
-  handle.position.set(0, 4.6, 0);
-  group.add(handle);
-
-  // ---- INSIDE: VAT + RESIN ----
-  const vatMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.5, metalness: 0.5 });
-  const vat = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.45, 2.4), vatMat);
-  vat.position.set(0, 1.0, 0);
-  group.add(vat);
-  // Resin (purple, in the vat)
-  const resinMat = new THREE.MeshPhysicalMaterial({
-    color: 0xa855f7, transparent: true, opacity: 0.7, roughness: 0.05, transmission: 0.5
-  });
-  const resin = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.18, 2.2), resinMat);
-  resin.position.set(0, 1.05, 0);
-  group.add(resin);
-  // Vat rim trim
-  const rimMat = new THREE.MeshStandardMaterial({ color: colors.accent, roughness: 0.4, metalness: 0.5 });
-  const rim = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.08, 2.6), rimMat);
-  rim.position.set(0, 1.25, 0);
-  group.add(rim);
-
-  // ---- Z-AXIS: BALL SCREW + DUAL CHROME RAILS + STEPPER ----
-  const ballMat = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.4, metalness: 0.85 });
-  const ballScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3.4, 16), ballMat);
-  ballScrew.position.set(0, 3.0, -1.45);
-  group.add(ballScrew);
-  // Z guide rails (chrome rods, parallel to ball screw)
-  for (const x of [-0.45, 0.45]) {
-    const guide = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 3.4, 12), chromeMat);
-    guide.position.set(x, 3.0, -1.45);
-    group.add(guide);
-  }
-  // Z-stepper at the top
-  const zStepper = makeStepperMotor(THREE, stepperMat, stepperCapMat, 0.85);
-  zStepper.rotation.x = Math.PI / 2;
-  zStepper.position.set(0, 4.85, -1.45);
-  group.add(zStepper);
-
-  // ---- BUILD PLATE + LEVELING CAP ----
-  const plateMat = new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.3, metalness: 0.85 });
-  const plate = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.12, 1.8), plateMat);
-  plate.position.set(0, 1.55, 0);
-  plate.castShadow = true;
-  group.add(plate);
-  // Leveling cap (knurled cylinder on top of plate)
-  const capMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.4, metalness: 0.6 });
-  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.18, 24), capMat);
-  cap.position.set(0, 1.7, 0);
-  group.add(cap);
-  // Plate arm (slot holding it on the screw)
-  const armMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.6 });
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.15, 1.3), armMat);
-  arm.position.set(0, 1.65, -0.65);
-  group.add(arm);
-
-  // ---- ACTIVATED CARBON AIR FILTER on top corner ----
-  const filterMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.7, metalness: 0.0 });
-  const filter = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.3, 0.7), filterMat);
-  filter.position.set(-1.0, 4.85, 1.0);
-  group.add(filter);
-  // Filter mesh grill
-  const gridMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.5, metalness: 0.3 });
-  const grid = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.04, 0.6), gridMat);
-  grid.position.set(-1.0, 5.02, 1.0);
-  group.add(grid);
-
-  // Status LED on top
-  const ledMat = new THREE.MeshStandardMaterial({
-    color: 0x22c55e, emissive: 0x22c55e, emissiveIntensity: 0.7, roughness: 0.2
-  });
-  const led = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 8), ledMat);
-  led.position.set(1.0, 4.85, 1.0);
-  group.add(led);
-
-  group.userData.plate = plate;
-  group.userData.plateRestY = 1.7;  // leveling cap height
-  group.userData.plateMaxY = 4.4;
-  group.userData.bedHalfSize = 1.0;
-  return group;
+// Hand a card's canvas to the stage (once): it draws whatever printer sits in that slot.
+function attachCard(card, i) {
+  if (!stage || !card) return;
+  const canvas = card.querySelector('.printer-canvas');
+  if (!canvas || printerScenes.has(canvas)) return;
+  printerScenes.set(canvas, stage.attach(canvas, () => state.printers[i]));
+}
+function attachAllCards() {
+  const root = document.getElementById('printers');
+  if (root) for (let i = 0; i < root.children.length; i++) attachCard(root.children[i], i);
+}
+function detachAllCards() {
+  if (stage) stage.clear();
+  printerScenes.clear();
 }
 
-// ---------------------------------------------------------------------
-// Industrial (SLS / MJF / DMLS / ADAM)
-// ---------------------------------------------------------------------
-function buildIndustrial3D(printer) {
-  const THREE = window.THREE;
-  const group = new THREE.Group();
-  const colors = BRAND_COLORS[printer.brand] || { frame: 0x222222, accent: 0xfbbf24, panel: 0x1f2937 };
-
-  const blackMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.7 });
-  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.9 });
-
-  // ---- MAIN STEEL CABINET ----
-  const cabMat = new THREE.MeshStandardMaterial({ color: colors.panel, roughness: 0.5, metalness: 0.55 });
-  const cab = new THREE.Mesh(new THREE.BoxGeometry(5.5, 5.5, 4.2), cabMat);
-  cab.position.y = 2.75;
-  cab.castShadow = true;
-  cab.receiveShadow = true;
-  group.add(cab);
-
-  // Subtle vertical seam lines (panel separations) - cosmetic
-  for (const xPos of [-1.85, 0, 1.85]) {
-    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.02, 5.5, 0.02), blackMat);
-    seam.position.set(xPos, 2.75, 2.12);
-    group.add(seam);
-  }
-
-  // ---- LARGE FRONT DOOR with viewing window ----
-  const doorMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.45, metalness: 0.55 });
-  const door = new THREE.Mesh(new THREE.BoxGeometry(3.2, 4.4, 0.08), doorMat);
-  door.position.set(-0.7, 2.75, 2.13);
-  group.add(door);
-  // Window
-  const winMat = new THREE.MeshPhysicalMaterial({
-    color: 0x1e293b, transparent: true, opacity: 0.7, roughness: 0.1,
-    metalness: 0.2, transmission: 0.4
-  });
-  const win = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.0, 0.04), winMat);
-  win.position.set(-0.7, 3.4, 2.18);
-  group.add(win);
-  // Window frame
-  const winFrameMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.5, metalness: 0.5 });
-  const winFrame = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.1, 0.06), winFrameMat);
-  winFrame.position.set(-0.7, 3.4, 2.16);
-  group.add(winFrame);
-  // Door handle
-  const handleMat = new THREE.MeshStandardMaterial({ color: 0xc0c0c0, roughness: 0.3, metalness: 0.9 });
-  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.7, 0.08), handleMat);
-  handle.position.set(0.85, 2.75, 2.18);
-  group.add(handle);
-  // Hinges (visible bolts on the left side of door)
-  for (let i = 0; i < 3; i++) {
-    const hinge = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.06), winFrameMat);
-    hinge.position.set(-2.27, 1.8 + i*1.2, 2.14);
-    group.add(hinge);
-  }
-
-  // ---- HMI CONTROL PANEL (large touchscreen on right side) ----
-  const hmiBezelMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4 });
-  const hmiBody = new THREE.Mesh(new THREE.BoxGeometry(1.5, 4.4, 0.08), hmiBezelMat);
-  hmiBody.position.set(1.85, 2.75, 2.13);
-  group.add(hmiBody);
-  // HMI screen (touchscreen)
-  const hmiScreenMat = new THREE.MeshStandardMaterial({
-    color: 0x111111, roughness: 0.15, metalness: 0.0,
-    emissive: 0x22d3ee, emissiveIntensity: 0.55
-  });
-  const hmiScreen = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.6, 0.05), hmiScreenMat);
-  hmiScreen.position.set(1.85, 3.6, 2.18);
-  group.add(hmiScreen);
-  // Status LED row (3 colored LEDs)
-  const ledColors = [0x22c55e, 0xfbbf24, 0xef4444];
-  ledColors.forEach((c, i) => {
-    const ledMat = new THREE.MeshStandardMaterial({
-      color: c, emissive: c, emissiveIntensity: 0.85, roughness: 0.2
-    });
-    const led = new THREE.Mesh(new THREE.SphereGeometry(0.10, 12, 8), ledMat);
-    led.position.set(1.5 + i*0.35, 2.3, 2.20);
-    group.add(led);
-  });
-  // E-stop button (red mushroom)
-  const eStopMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.55, metalness: 0.3 });
-  const eStop = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.18, 16), eStopMat);
-  eStop.rotation.x = Math.PI/2;
-  eStop.position.set(1.85, 1.7, 2.20);
-  group.add(eStop);
-  // E-stop top dome
-  const eStopTop = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 8, 0, Math.PI*2, 0, Math.PI/2), eStopMat);
-  eStopTop.rotation.x = -Math.PI/2;
-  eStopTop.position.set(1.85, 1.7, 2.30);
-  group.add(eStopTop);
-  // Yellow ring under E-stop
-  const ringMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.4 });
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.04, 8, 24), ringMat);
-  ring.rotation.x = Math.PI / 2;
-  ring.position.set(1.85, 1.7, 2.18);
-  group.add(ring);
-
-  // ---- STATUS TOWER (tri-color stack on top) ----
-  const towerBaseMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.4 });
-  // Pole
-  const towerPole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.6, 12), towerBaseMat);
-  towerPole.position.set(2.4, 5.85, -1.7);
-  group.add(towerPole);
-  // Mount base
-  const towerMount = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.18, 0.4), towerBaseMat);
-  towerMount.position.set(2.4, 5.55, -1.7);
-  group.add(towerMount);
-  // Three stacked colored cylinders (red top, yellow middle, green bottom — IEC standard)
-  const towerColors = [0xef4444, 0xfbbf24, 0x22c55e];
-  towerColors.forEach((c, i) => {
-    const segMat = new THREE.MeshStandardMaterial({
-      color: c, roughness: 0.3, metalness: 0.0,
-      emissive: c, emissiveIntensity: i === 2 ? 0.7 : 0.15,  // green is on
-      transparent: true, opacity: 0.85
-    });
-    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.4, 16), segMat);
-    seg.position.set(2.4, 6.4 - i*0.42, -1.7);
-    group.add(seg);
-  });
-  // Tower top cap
-  const towerTopCap = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 8, 0, Math.PI*2, 0, Math.PI/2), towerBaseMat);
-  towerTopCap.position.set(2.4, 6.62, -1.7);
-  group.add(towerTopCap);
-
-  // ---- BRAND LABEL ----
-  const badgeMat = new THREE.MeshStandardMaterial({
-    color: colors.accent, emissive: colors.accent, emissiveIntensity: 0.4, roughness: 0.3
-  });
-  const brandLabel = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.3, 0.04), badgeMat);
-  brandLabel.position.set(-0.7, 5.1, 2.16);
-  group.add(brandLabel);
-
-  // ---- VENTILATION GRILLE on top ----
-  const gridMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.7 });
-  for (let i = 0; i < 10; i++) {
-    const slat = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.04, 0.08), gridMat);
-    slat.position.set(-1.0, 5.52, -1.6 + i*0.16);
-    group.add(slat);
-  }
-  // Grille frame
-  const grilleFrameMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5, metalness: 0.5 });
-  const grilleFrame = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.06, 1.7), grilleFrameMat);
-  grilleFrame.position.set(-1.0, 5.51, -0.8);
-  group.add(grilleFrame);
-
-  // ---- LEVELING FEET (industrial pad-style, not casters) ----
-  const footMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.4 });
-  for (const [x, z] of [[-2.5, -1.85], [2.5, -1.85], [-2.5, 1.85], [2.5, 1.85]]) {
-    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.12, 16), footMat);
-    foot.position.set(x, 0.06, z);
-    foot.castShadow = true;
-    group.add(foot);
-    // Threaded shaft above the foot
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.18, 12), chromeMat);
-    shaft.position.set(x, 0.21, z);
-    group.add(shaft);
-  }
-
-  // ---- BOLT HEADS along the corners (subtle industrial detail) ----
-  const boltMat = handleMat;
-  for (let i = 0; i < 4; i++) {
-    const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8), boltMat);
-    bolt.rotation.x = Math.PI/2;
-    bolt.position.set(2.76, 0.7 + i*1.2, -1.85);
-    group.add(bolt);
-    const bolt2 = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 8), boltMat);
-    bolt2.rotation.x = Math.PI/2;
-    bolt2.position.set(-2.76, 0.7 + i*1.2, -1.85);
-    group.add(bolt2);
-  }
-
-  return group;
-}
-
-// ---------------------------------------------------------------------
-// Model creation — 3D shape per product
-// ---------------------------------------------------------------------
-function createGearGeo() {
-  const THREE = window.THREE;
-  const teeth = 10, outer = 0.72, inner = 0.55, h = 0.4;
-  const shape = new THREE.Shape();
-  for (let i = 0; i <= teeth * 2; i++) {
-    const r = i % 2 === 0 ? outer : inner;
-    const a = (i / (teeth * 2)) * Math.PI * 2;
-    const x = Math.cos(a) * r, y = Math.sin(a) * r;
-    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
-  }
-  const hole = new THREE.Path();
-  hole.absarc(0, 0, 0.18, 0, Math.PI * 2, true);
-  shape.holes.push(hole);
-  return new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false });
-}
-
-function createBracketGeo() {
-  const THREE = window.THREE;
-  const shape = new THREE.Shape();
-  shape.moveTo(-0.6, -0.6);
-  shape.lineTo(0.6, -0.6);
-  shape.lineTo(0.6, -0.2);
-  shape.lineTo(-0.2, -0.2);
-  shape.lineTo(-0.2, 0.6);
-  shape.lineTo(-0.6, 0.6);
-  shape.closePath();
-  return new THREE.ExtrudeGeometry(shape, { depth: 0.5, bevelEnabled: false });
-}
-
-function createCrossGeo() {
-  const THREE = window.THREE;
-  const a = new THREE.BoxGeometry(2.0, 0.18, 0.35);
-  const b = new THREE.BoxGeometry(0.35, 0.18, 2.0);
-  // Merge using BufferGeometryUtils-like manual approach: just return primary;
-  // Two-mesh solution will be done in createModelMesh.
-  return a;
-}
-
-function createTallGeo() {
-  const THREE = window.THREE;
-  const points = [];
-  for (let i = 0; i <= 12; i++) {
-    const t = i / 12;
-    const r = 0.35 + Math.sin(t * Math.PI) * 0.30;
-    points.push(new THREE.Vector2(r, t * 1.6));
-  }
-  return new THREE.LatheGeometry(points, 28);
-}
-
-function createAngularGeo() {
-  const THREE = window.THREE;
-  const shape = new THREE.Shape();
-  shape.moveTo(-0.6, -0.6);
-  shape.lineTo(-0.3, 0.5);
-  shape.lineTo(0.0, 0.0);
-  shape.lineTo(0.4, 0.7);
-  shape.lineTo(0.6, -0.6);
-  shape.closePath();
-  return new THREE.ExtrudeGeometry(shape, { depth: 0.5, bevelEnabled: false });
-}
-
-function createBatchGeo() {
-  const THREE = window.THREE;
-  // Single representative box — visual fidelity sacrifice for simplicity
-  return new THREE.BoxGeometry(1.6, 0.4, 1.2);
-}
-
-function createShapeGeometry(shape) {
-  const THREE = window.THREE;
-  switch (shape) {
-    case 'flat': return new THREE.BoxGeometry(2.0, 0.30, 1.2);
-    case 'flat-wide': return new THREE.BoxGeometry(2.4, 0.22, 1.0);
-    case 'tall': return createTallGeo();
-    case 'humanoid': return new THREE.CapsuleGeometry(0.35, 0.9, 6, 12);
-    case 'dome': return new THREE.SphereGeometry(0.85, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
-    case 'cross': return createCrossGeo();
-    case 'gear': return createGearGeo();
-    case 'bracket': return createBracketGeo();
-    case 'block': return new THREE.BoxGeometry(1.0, 1.2, 1.0);
-    case 'gem': return new THREE.OctahedronGeometry(0.6, 0);
-    case 'small': return new THREE.SphereGeometry(0.4, 16, 12);
-    case 'box': return new THREE.BoxGeometry(1.2, 1.0, 1.2);
-    case 'angular': return createAngularGeo();
-    case 'batch': return createBatchGeo();
-    default: return new THREE.BoxGeometry(1.0, 1.0, 1.0);
-  }
-}
-
-// Build a humanoid figure (head + torso + arms + legs) — for "Articulated Toy",
-// "Tabletop Miniatures", "Surgical Implant" etc.
-function buildHumanoidGroup(mat) {
-  const THREE = window.THREE;
-  const g = new THREE.Group();
-  // Legs (anchor at y=0)
-  const legGeo = new THREE.BoxGeometry(0.18, 0.6, 0.18);
-  const lL = new THREE.Mesh(legGeo, mat); lL.position.set(-0.13, 0.3, 0); lL.castShadow = true; g.add(lL);
-  const lR = new THREE.Mesh(legGeo, mat); lR.position.set( 0.13, 0.3, 0); lR.castShadow = true; g.add(lR);
-  // Hip joint
-  const hip = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 0.22), mat); hip.position.y = 0.66; g.add(hip);
-  // Torso
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.62, 0.30), mat);
-  torso.position.y = 1.04; torso.castShadow = true; g.add(torso);
-  // Arms (slightly offset)
-  const armGeo = new THREE.BoxGeometry(0.14, 0.55, 0.14);
-  const aL = new THREE.Mesh(armGeo, mat); aL.position.set(-0.34, 1.05, 0); aL.castShadow = true; g.add(aL);
-  const aR = new THREE.Mesh(armGeo, mat); aR.position.set( 0.34, 1.05, 0); aR.castShadow = true; g.add(aR);
-  // Shoulders (small joint balls)
-  const shoulderGeo = new THREE.SphereGeometry(0.10, 12, 8);
-  const sL = new THREE.Mesh(shoulderGeo, mat); sL.position.set(-0.30, 1.30, 0); g.add(sL);
-  const sR = new THREE.Mesh(shoulderGeo, mat); sR.position.set( 0.30, 1.30, 0); g.add(sR);
-  // Neck
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.10, 0.10, 12), mat);
-  neck.position.y = 1.43; g.add(neck);
-  // Head
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.20, 14, 10), mat);
-  head.position.y = 1.62; head.castShadow = true; g.add(head);
-  return g;
-}
-
-// Build a quadcopter drone frame — central hub + 4 X-pattern arms + motor pods
-function buildDroneGroup(mat) {
-  const THREE = window.THREE;
-  const g = new THREE.Group();
-  // Central hub
-  const hub = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.20, 0.45), mat);
-  hub.position.y = 0.10; hub.castShadow = true; g.add(hub);
-  // 4 arms in X pattern
-  for (let i = 0; i < 4; i++) {
-    const a = (i * Math.PI / 2) + (Math.PI / 4);
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.10, 0.18), mat);
-    arm.rotation.y = a;
-    arm.position.set(Math.cos(a) * 0.45, 0.10, Math.sin(a) * 0.45);
-    arm.castShadow = true;
-    g.add(arm);
-    // Motor pod at tip
-    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.18, 14), mat);
-    motor.position.set(Math.cos(a) * 0.85, 0.20, Math.sin(a) * 0.85);
-    motor.castShadow = true;
-    g.add(motor);
-    // Propeller hint (thin disc on top)
-    const prop = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.02, 16), mat);
-    prop.position.set(Math.cos(a) * 0.85, 0.31, Math.sin(a) * 0.85);
-    g.add(prop);
-  }
-  return g;
-}
-
-// Build a stylized helmet (dome with face cutout hint)
-function buildHelmetGroup(mat) {
-  const THREE = window.THREE;
-  const g = new THREE.Group();
-  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.85, 24, 14, 0, Math.PI * 2, 0, Math.PI * 0.55), mat);
-  dome.position.y = 0.0; dome.castShadow = true; g.add(dome);
-  // Face plate (visor) — slightly darker
-  const visorMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.7 });
-  const visor = new THREE.Mesh(new THREE.SphereGeometry(0.72, 18, 10, Math.PI * 0.8, Math.PI * 0.4, Math.PI * 0.4, Math.PI * 0.3), visorMat);
-  visor.position.y = 0.0;
-  g.add(visor);
-  return g;
-}
-
-function createModelMesh(productId, color) {
-  const THREE = window.THREE;
-  const shape = SHAPE_FOR_PRODUCT[productId] || 'box';
-  const colorInt = hexToInt(color);
-  const mat = new THREE.MeshStandardMaterial({
-    color: colorInt, roughness: 0.65, metalness: 0.1,
-  });
-
-  // Multi-piece groups for shapes that need to look like real objects
-  if (shape === 'humanoid') return buildHumanoidGroup(mat);
-  if (shape === 'cross')    return buildDroneGroup(mat);
-  if (shape === 'dome')     return buildHelmetGroup(mat);
-
-  const geo = createShapeGeometry(shape);
-
-  // For shapes that are 2D extrudes (gear, bracket, angular), rotate so extrude axis is Y
-  if (shape === 'gear' || shape === 'bracket' || shape === 'angular') {
-    geo.rotateX(-Math.PI / 2);
-  }
-  geo.computeBoundingBox();
-  const bb = geo.boundingBox;
-  geo.translate(0, -bb.min.y, 0);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function updateModel(info, slot) {
-  const THREE = window.THREE;
-  const printing = slot.state === 'printing' && slot.job;
-
-  if (!printing) {
-    if (info.modelMesh) {
-      info.scene.remove(info.modelMesh);
-      disposeModelMesh(info.modelMesh);
-      info.modelMesh = null;
-      info.modelJobId = null;
-    }
-    return;
-  }
-
-  if (info.modelJobId !== slot.job.orderId) {
-    if (info.modelMesh) {
-      info.scene.remove(info.modelMesh);
-      disposeModelMesh(info.modelMesh);
-    }
-    const mesh = createModelMesh(slot.job.productId, slot.job.color);
-    const printer = printerById(slot.printerId);
-    const cat = printerCategory(printer);
-    if (cat === 'fdm') {
-      // Anchor at top of build plate; will scale upward as job runs
-      mesh.position.y = info.group.userData.bedY;
-    } else if (cat === 'resin') {
-      // Model hangs below the build plate (resin prints upside-down)
-      mesh.scale.y = -1;
-      mesh.position.y = info.group.userData.plateRestY - 0.06;
-    } else {
-      // Industrial — model hidden inside cabinet
-      mesh.position.y = 0.3;
-      mesh.visible = false;
-    }
-    info.scene.add(mesh);
-
-    info.modelMesh = mesh;
-    info.modelJobId = slot.job.orderId;
-    info.modelHeight = computeModelHeight(mesh);
-    info.modelCategory = cat;
-  }
-
-  const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
-  if (info.modelCategory === 'resin') {
-    // Build plate rises; model attached underneath grows downward
-    const plate = info.group.userData.plate;
-    const lift = (info.group.userData.plateMaxY - info.group.userData.plateRestY) * progress;
-    plate.position.y = info.group.userData.plateRestY + lift;
-    info.modelMesh.position.y = info.group.userData.plateRestY - 0.06 + lift;
-    info.modelMesh.scale.y = -Math.max(0.01, progress);
-  } else if (info.modelCategory === 'fdm') {
-    // Model grows from ~25% to 100% over the print. We don't go to 0 because
-    // a vase scaled to 0.05 looks like a flat disc — unrecognizable. Starting
-    // at 25% keeps the silhouette readable from the first second.
-    info.modelMesh.scale.y = 0.25 + progress * 0.75;
-    info.modelMesh.position.y = info.group.userData.bedY;
-  }
-}
-
-// Dispose any geometries/materials anywhere in a mesh OR group hierarchy.
-function disposeModelMesh(node) {
-  if (!node) return;
-  node.traverse(obj => {
-    if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) {
-      if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
-      else obj.material.dispose();
-    }
-  });
-}
-
-function computeModelHeight(mesh) {
-  // Single-mesh shapes have geometry.boundingBox; Group shapes (humanoid, drone,
-  // helmet) need to compute the combined bbox across all children.
-  if (mesh.geometry && mesh.geometry.boundingBox) {
-    return mesh.geometry.boundingBox.max.y - mesh.geometry.boundingBox.min.y;
-  }
-  const box = new THREE.Box3();
-  box.setFromObject(mesh);
-  return Math.max(0.1, box.max.y - box.min.y);
-}
-
-function animateScene(info, slot) {
-  const printing = slot.state === 'printing' && slot.job;
-  const t = Date.now() / 800;
-
-  // FDM — animate Z-carriage rising with model + head wobbling on its rail
-  if (info.group.userData.zCarriage) {
-    const carriage = info.group.userData.zCarriage;
-    const head = info.group.userData.headGroup;
-    const isCanti = info.group.userData.isCantilever;
-    const minY = info.group.userData.zCarriageMinY;
-    const maxY = info.group.userData.zCarriageMaxY;
-    const halfSize = info.group.userData.bedHalfSize || 1.7;
-
-    if (printing) {
-      const progress = Math.min(1, slot.job.hoursElapsed / slot.job.hoursTotal);
-      const modelH = info.modelHeight || 0.5;
-      // Carriage hovers just above the current top of the model
-      const surfaceY = info.group.userData.bedY + modelH * progress * 0.85;
-      // Carriage Y is the level of the print head's NOZZLE TIP
-      // Nozzle tip is 0.95 below the carriage local origin (head down by 0.15 + 0.7 + 0.1)
-      // We want nozzle tip ~= surfaceY + 0.05 (just touching)
-      const carriageTargetY = surfaceY + 1.0;  // visual offset for the nozzle
-      carriage.position.y = Math.min(Math.max(carriageTargetY, minY), maxY);
-
-      // Head moves along the rail (X-axis only). Z stays locked so the
-      // head never visibly leaves the gantry — wandering Z made it look
-      // like the head was floating off the rail. Bed/Y motion is faked.
-      head.position.x = Math.sin(t * 1.3) * (halfSize * 0.9);
-      head.position.z = isCanti ? -1.0 : 0;
-    } else {
-      carriage.position.y = minY;
-      head.position.x = 0;
-      head.position.z = isCanti ? -1.0 : 0;
-    }
-  }
-
-  info.renderer.render(info.scene, info.camera);
-}
 
 // =====================================================================
 // DOM rendering
+// Every list is built once and patched in place: a node is only written when what it shows has
+// changed, so a button under the pointer stays the same button between mousedown and mouseup.
 // =====================================================================
+
+// Write text (or HTML) into a node only when it differs from what was last written there.
+function put(cache, key, el, value, html) {
+  if (cache[key] === value) return;
+  cache[key] = value;
+  if (html) el.innerHTML = value; else el.textContent = value;
+}
+function showEl(cache, key, el, on, display = '') {
+  if (cache[key] === on) return;
+  cache[key] = on;
+  el.style.display = on ? display : 'none';
+}
 
 function ensurePrinterCards() {
   const root = document.getElementById('printers');
@@ -2405,17 +954,25 @@ function ensurePrinterCards() {
         <div class="progress" style="display:none"><div class="fill"></div></div>
         <div class="job-info" style="display:none"></div>
         <div class="printer-actions">
-          <button class="printer-manage-btn"></button>
+          <button class="card-action" style="display:none"></button>
+          <button class="card-secondary" style="display:none"></button>
+          <button class="printer-manage-btn">Manage / Sell</button>
         </div>
       </div>
     `;
+    card._v = {};
+    card._el = {
+      name: card.querySelector('.printer-name'), specs: card.querySelector('.printer-specs'), meta: card.querySelector('.printer-meta'),
+      status: card.querySelector('.printer-status'), progress: card.querySelector('.progress'), fill: card.querySelector('.progress .fill'),
+      job: card.querySelector('.job-info'), action: card.querySelector('.card-action'), secondary: card.querySelector('.card-secondary'),
+    };
     root.appendChild(card);
+    attachCard(card, root.children.length - 1);
   }
   while (root.children.length > state.printers.length) {
     const removed = root.lastChild;
     const canvas = removed.querySelector('canvas');
-    const info = printerScenes.get(canvas);
-    if (info) { info.renderer.dispose(); printerScenes.delete(canvas); }
+    if (printerScenes.has(canvas)) { if (stage) stage.detach(canvas); printerScenes.delete(canvas); }
     root.removeChild(removed);
   }
 }
@@ -2425,239 +982,413 @@ function renderPrinters() {
   const root = document.getElementById('printers');
   state.printers.forEach((slot, i) => {
     const card = root.children[i];
-    if (!card) return;
+    if (!card || !card._el) return;
+    const slotKey = `${slot.slotId}|${slot.printerId}`;
+    if (card._v.slotKey !== slotKey) card._v = { slotKey };     // a different printer now sits at this index
+    const v = card._v, el = card._el;
     const printer = printerById(slot.printerId);
-    if (!printer) return;
-
-    card.classList.toggle('printing', slot.state === 'printing');
-
-    card.querySelector('.printer-name').innerHTML =
-      `<span class="brand">${printer.brand}</span> <strong>${printer.model}</strong>` +
-      ` <span class="printer-tier ${printer.tier}">${printer.tier}</span>`;
-    card.querySelector('.printer-specs').textContent =
-      `${printer.tech} · ${printer.buildVolumeMM.join('×')}mm · ${effectiveThroughput(printer)} g/hr · ${(printer.baseReliability*100).toFixed(0)}% reliable`;
-    const meta = card.querySelector('.printer-meta');
-    if (meta) {
-      const sellAmt = calcSellPrice(slot);
-      meta.innerHTML =
-        `<span class="meta-pill">${slot.nozzleSize}mm ${slot.nozzleHardened ? '<span class="hardened">hardened</span>' : 'brass'}</span>` +
-        ` <span class="meta-pill">${(slot.totalHours||0).toFixed(1)}h used</span>` +
-        ` <span class="meta-pill resale">${fmtPrice(sellAmt)} resale</span>`;
+    const fdm = Sim.usesNozzle(printer);
+    const phase = slot.phase || 'idle';
+    const st = Sim.slotStatus(Cat, state, slot);
+    const active = phase === 'heating' || phase === 'prep' || phase === 'printing' || phase === 'coldpull' || phase === 'cleaning';
+    if (v.cls !== `${active}|${st.tone}`) {
+      v.cls = `${active}|${st.tone}`;
+      card.classList.toggle('printing', active);
+      card.classList.toggle('attention', st.tone === 'done');
+      card.classList.toggle('fault', st.tone === 'fault');
     }
-    const manageBtn = card.querySelector('.printer-manage-btn');
-    if (manageBtn) {
-      manageBtn.textContent = 'Manage / Sell';
-      manageBtn.onclick = () => openManage(i);
+    put(v, 'name', el.name, printer.unknown
+      ? `<strong>Unknown machine</strong> <span class="printer-tier">retired</span>`
+      : `<span class="brand">${esc(printer.brand)}</span> <strong>${esc(printer.model)}</strong> <span class="printer-tier ${printer.tier}">${printer.tier}</span>`, true);
+    put(v, 'specs', el.specs, printer.unknown ? 'No longer in the catalog · sell it in Manage'
+      : `${printer.tech} · ${printer.buildVolumeMM.join('×')} mm · ${speedLabel(printer)} · ${(printer.baseReliability*100).toFixed(0)}% reliable`);
+
+    const pills = [];
+    if (fdm) {
+      const noz = Sim.slotNozzle(slot);
+      const h = slot.nozzleHealth ?? 1;
+      pills.push(`<span class="meta-pill">${noz.size} mm ${noz.metal === 'brass' ? 'brass' : `<span class="hardened">${noz.metal}</span>`}${h < 0.5 ? ' · worn' : ''}</span>`);
+    }
+    for (const u of slot.upgrades || []) pills.push(`<span class="meta-pill">${u === 'enclosure' ? 'Enclosure' : 'Camera'}</span>`);
+    pills.push(`<span class="meta-pill">${Math.floor(slot.totalHours || 0)} h used</span>`);
+    pills.push(`<span class="meta-pill resale">${fmtPrice(Sim.calcSellPrice(Cat, slot))} resale</span>`);
+    put(v, 'meta', el.meta, pills.join(' '), true);
+
+    put(v, 'status', el.status, st.line);
+    if (v.tone !== st.tone) { v.tone = st.tone; el.status.className = 'printer-status ' + st.tone; }
+
+    const job = slot.job;
+    const showProgress = !!job && phase !== 'idle' && phase !== 'cleaning';
+    showEl(v, 'progressOn', el.progress, showProgress, 'block');
+    if (showProgress) {
+      const pct = Math.round(Sim.partProgress(slot) * 100);
+      if (v.pct !== pct) { v.pct = pct; el.fill.style.width = `${pct}%`; }
+    }
+    showEl(v, 'jobOn', el.job, !!job, 'flex');
+    if (job) {
+      const mat = Sim.cap(Sim.materialLabel(Cat, job.materialId));
+      // A damp spool strings (the 3D view shows the wisps; this says it in words).
+      const m = materialById(job.materialId);
+      const damp = fdm && m && m.dampHours55 && phase === 'printing' && Sim.wetOf(state, job.materialId) >= 0.3 ? ' · damp spool, stringy' : '';
+      put(v, 'job', el.job, `<span>${esc(job.productName)}${job.customer ? ` for ${esc(job.customer)}` : ''}</span><span>${esc(mat)} · ${Math.round(job.grams)} g${damp}</span>`, true);
     }
 
-    const status = card.querySelector('.printer-status');
-    const progress = card.querySelector('.progress');
-    const jobInfo = card.querySelector('.job-info');
-
-    if (slot.state === 'printing' && slot.job) {
-      const j = slot.job;
-      const pct = Math.min(100, j.hoursElapsed / j.hoursTotal * 100);
-      const remaining = j.hoursTotal - j.hoursElapsed;
-      const mat = materialById(j.materialId);
-      status.innerHTML = `Printing <strong>${j.productName}</strong>`;
-      status.className = 'printer-status';
-      progress.style.display = 'block';
-      progress.querySelector('.fill').style.width = `${pct}%`;
-      jobInfo.style.display = 'flex';
-      jobInfo.innerHTML = `<span>${mat ? mat.name : j.materialId} · ${j.grams.toFixed(0)}g</span><span>${remaining.toFixed(1)}h left → ${fmtMoney(j.payout)}</span>`;
-    } else {
-      status.textContent = 'Idle — assign an order';
-      status.className = 'printer-status idle';
-      progress.style.display = 'none';
-      jobInfo.style.display = 'none';
+    const a = st.action;
+    showEl(v, 'actOn', el.action, !!a, '');
+    if (a) {
+      put(v, 'actLabel', el.action, a.label);
+      if (el.action.dataset.act !== a.id) { el.action.dataset.act = a.id; el.action.className = 'card-action ' + a.id; }
+    }
+    const s2 = st.secondary;
+    showEl(v, 'secOn', el.secondary, !!s2, '');
+    if (s2) {
+      put(v, 'secLabel', el.secondary, s2.label);
+      if (el.secondary.dataset.act !== s2.id) el.secondary.dataset.act = s2.id;
     }
   });
 }
 
-// Boil down a long canAssign reason to ~3 words for tight button labels.
-function shortReason(r) {
-  if (!r) return '';
-  const s = r.toLowerCase();
-  if (s.includes('hardened')) return 'no hardened';
-  if (s.includes('material')) return 'wrong material';
-  if (s.includes('tech')) return 'wrong tech';
-  if (s.includes('volume')) return 'too small';
-  if (s.includes('precision')) return 'low precision';
-  if (s.includes('busy')) return 'busy';
-  if (s.startsWith('need ')) return r;
-  return r;
+// What an order earns on the best printer for it: one that can take it now, else one that could
+// once it's free or stocked.
+function bestFor(order) {
+  let best = null, fallback = null;
+  state.printers.forEach((slot, i) => {
+    const c = canAssign(order, slot);
+    if (c.ok) {
+      const est = Sim.estimateJob(Cat, state, slot, order, c.materialId);
+      const risk = Sim.jobRisk(Cat, state, slot, order, est);
+      const value = est.keep * risk.chance;
+      if (!best || value > best.value) best = { i, slot, c, est, risk, value };
+    } else if (!fallback && (c.code === 'busy' || c.code === 'stock')) {
+      const probe = c.code === 'busy' ? canAssign(order, { ...slot, phase: 'idle', state: 'idle' }) : c;
+      if (probe.ok || probe.code === 'stock') {
+        const est = Sim.estimateJob(Cat, state, slot, order, probe.materialId || order.materialId);
+        fallback = { i, slot, c, est };
+      }
+    }
+  });
+  return best || fallback;
 }
 
+// Why nothing can take an order right now. A busy printer that could make it once it's free comes
+// first (with how long, or what to do to free it), so owning the right machine never reads as
+// "needs a resin printer". Otherwise the easiest fix among the printers that never could.
+function waitReason(order, checks, one) {
+  if (!state.printers.length) return 'No printers yet · buy one in the shop';
+  let soonest = null;
+  const never = [];
+  checks.forEach((c, i) => {
+    if (c.code !== 'busy') { never.push(c); return; }
+    const slot = state.printers[i];
+    const probe = canAssign(order, { ...slot, phase: 'idle', state: 'idle' });
+    if (!probe.ok && probe.code !== 'stock') { never.push(probe); return; }
+    const j = slot.job;
+    const wait = (slot.phase === 'heating' || slot.phase === 'prep' || slot.phase === 'printing') && j ? Math.max(0, j.hoursTotal - j.hoursElapsed)
+      : (slot.phase === 'cleaning' || slot.phase === 'coldpull') ? Math.max(0, slot.timer || 0) : 0;
+    if (!soonest || wait < soonest.wait) soonest = { slot, wait, probe };
+  });
+  const stockNow = never.find(c => c.code === 'stock');   // a free printer that only needs material: buying it is quickest
+  if (stockNow) return stockNow.reason;
+  if (soonest) {
+    const who = one ? 'Your printer' : `The ${printerById(soonest.slot.printerId).model}`;
+    const then = { done: 'collect its part first', clogged: 'do a cold pull first', failed: 'reprint or release its failed print first' }[soonest.slot.phase]
+      || `when it's free · ${Sim.fmtDuration(Math.ceil(soonest.wait * 12) / 12)} left`;
+    const stock = soonest.probe.code === 'stock' ? ` · ${soonest.probe.reason.replace(/^Needs /, 'needs ')}` : '';
+    return `${who} can make it ${then}${stock}`;
+  }
+  let pick = null;
+  for (const code of Sim.REASON_PRIORITY) { pick = never.find(c => c.code === code); if (pick) break; }
+  return (pick || never[0]).reason;
+}
+
+function dueText(order) {
+  const h = order.dueAt != null ? order.dueAt - Sim.now(state) : order.deadlineHours;
+  if (h >= 24) return `Due in ${Sim.fmtDuration(h)}`;
+  if (h >= 2) return `Due in ${Math.floor(h)} h`;
+  return `Due in ${Math.max(5, Math.ceil(h * 60 / 5) * 5)} m`;
+}
+
+const orderEls = new Map();   // order id -> { el, v, parts }
+let ordersShell = null;
+let lastOrdersRender = 0;
 function renderOrders() {
   const root = document.getElementById('orders');
-  if (state.orders.length === 0) {
-    root.innerHTML = '<div class="empty">No incoming orders. Hang tight…</div>';
-    return;
+  if (!ordersShell || ordersShell.root !== root || !root.contains(ordersShell.list)) {
+    root.innerHTML = `<div class="orders-toolbar" style="display:none"><button class="reject-all-btn" data-act="rejectAll"></button></div>
+      <div class="empty" style="display:none">No incoming orders. Hang tight…</div><div class="orders-list"></div>`;
+    ordersShell = { root, toolbar: root.querySelector('.orders-toolbar'), rejectAll: root.querySelector('.reject-all-btn'),
+      empty: root.querySelector('.empty'), list: root.querySelector('.orders-list'), v: {} };
+    orderEls.clear();
   }
-  root.innerHTML = state.orders.length >= 3
-    ? `<div class="orders-toolbar"><button class="reject-all-btn" onclick="window.rejectAllOrders()">Decline all ${state.orders.length}</button></div>`
-    : '';
-  state.orders.forEach(order => {
-    const el = document.createElement('div');
-    el.className = 'order-card';
-    const mat = materialById(order.materialId);
-    const matLabel = mat ? mat.name : order.materialId;
-    const urgent = order.deadlineHours < 12;
+  const S = ordersShell;
+  showEl(S.v, 'toolbar', S.toolbar, state.orders.length >= 3, 'flex');
+  if (state.orders.length >= 3) put(S.v, 'rejectAll', S.rejectAll, `Decline all ${state.orders.length}`);
+  showEl(S.v, 'empty', S.empty, state.orders.length === 0, 'block');
 
-    const checks = state.printers.map(slot => canAssign(order, slot));
-    const anyOk = checks.some(c => c.ok);
-
-    let actions = '';
-    state.printers.forEach((slot, i) => {
-      const c = checks[i];
-      const printer = printerById(slot.printerId);
-      const label = state.printers.length === 1
-        ? (c.ok ? 'Print it' : c.reason)
-        : (c.ok ? `→ ${printer.model}` : `${printer.model}: ${shortReason(c.reason)}`);
-      actions += `<button onclick="window.assignOrder(${order.id}, ${i})" ${c.ok ? '' : 'disabled'} title="${c.reason || ''}">${label}</button>`;
-    });
-    actions += `<button class="reject" onclick="window.rejectOrder(${order.id})" title="Decline">Decline</button>`;
-
-    // Order-level "why can't I print this?" summary.
-    // Pick the EASIEST-TO-FIX reason — if one printer can do it but is just
-    // short on filament, that's far more actionable than "no SLS printer
-    // exists" from the other three.
-    let reasonHtml = '';
-    if (!anyOk) {
-      const nonBusy = checks.filter(c => c.reason !== 'busy');
-      const allBusy = nonBusy.length === 0;
-      let reason;
-      if (allBusy) {
-        reason = 'All printers busy';
-      } else {
-        // Priority: cheapest fix first. "Need Xg" = just buy more material.
-        // "needs hardened" = swap nozzle. "Wrong material/tech" = buy a printer.
-        const priority = ['need ', 'hardened', 'precision', 'volume', 'material', 'tech'];
-        let pick = null;
-        for (const p of priority) {
-          const m = nonBusy.find(c => c.reason && c.reason.toLowerCase().includes(p));
-          if (m) { pick = m; break; }
-        }
-        reason = (pick || nonBusy[0]).reason;
-      }
-      reasonHtml = `<div class="order-reason">✗ ${reason}</div>`;
+  const live = new Set();
+  const wanted = [];
+  for (const order of state.orders) {
+    live.add(order.id);
+    let o = orderEls.get(order.id);
+    if (!o) {
+      const el = document.createElement('div');
+      el.className = 'order-card';
+      el.dataset.order = order.id;
+      el.innerHTML = `<img class="order-thumb" alt="" aria-hidden="true" hidden><div class="order-name"></div><div class="order-spec"></div><div class="order-cost"></div><div class="order-pay"></div>
+        <div class="order-deadline"></div><div class="order-reason" style="display:none"></div><div class="order-actions"></div>`;
+      o = { el, v: {}, parts: { name: el.querySelector('.order-name'), spec: el.querySelector('.order-spec'), cost: el.querySelector('.order-cost'),
+        pay: el.querySelector('.order-pay'), due: el.querySelector('.order-deadline'), reason: el.querySelector('.order-reason'), actions: el.querySelector('.order-actions'),
+        thumb: el.querySelector('.order-thumb') } };
+      orderEls.set(order.id, o);
     }
+    wanted.push(o.el);
+    const { v, parts } = o;
+    // The part itself, in its material and colour (drawn by the stage, a few per frame).
+    if (stage && !o.thumbAsked) {
+      o.thumbAsked = true;
+      stage.partThumb(order).then((url) => {
+        if (!url) return;
+        parts.thumb.src = url;
+        parts.thumb.hidden = false;
+        o.el.classList.add('has-thumb');
+      }, () => {});
+    }
+    const matLabel = Sim.cap(Sim.materialLabel(Cat, order.materialId));
+    put(v, 'name', parts.name, `${esc(order.productName)}<span class="order-cat">${esc(order.category || '')}</span>${order.customer ? `<span class="order-for">for ${esc(order.customer)}</span>` : ''}`, true);
+    const best = bestFor(order);
+    if (best) {
+      put(v, 'spec', parts.spec, `${matLabel} · ${Sim.fmtDuration(best.est.totalHours)} · you keep ${fmtMoney(best.est.keep)}`);
+      put(v, 'cost', parts.cost, `${Sim.fmtGrams(best.est.usedGrams)} material ${fmtMoney(best.est.matCost)} · power ${fmtMoney(best.est.powerCost)}${best.est.finishHours > 0 ? ` · includes ${Sim.fmtDuration(best.est.finishHours)} finishing` : ''}`);
+    } else {
+      put(v, 'spec', parts.spec, `${matLabel} · ${Sim.fmtGrams(order.grams)}${order.batchSize > 1 ? ` · batch of ${order.batchSize}` : ''}`);
+      put(v, 'cost', parts.cost, '');
+    }
+    put(v, 'pay', parts.pay, `Pays up to ${fmtMoney(order.basePrice)}`);
+    const due = dueText(order);
+    put(v, 'due', parts.due, due);
+    const urgent = (order.dueAt != null ? order.dueAt - Sim.now(state) : order.deadlineHours) < 12;
+    if (v.urgent !== urgent) { v.urgent = urgent; parts.due.classList.toggle('urgent', urgent); }
 
-    el.innerHTML = `
-      <div class="order-name">${order.productName}<span class="order-cat">${order.category}</span></div>
-      <div class="order-spec">${matLabel} · ${order.grams.toFixed(0)}g · ~${order.baseHours.toFixed(1)}h${order.batchSize > 1 ? ` · batch of ${order.batchSize}` : ''}</div>
-      <div class="order-pay">${fmtMoney(order.basePrice)}</div>
-      <div class="order-deadline ${urgent ? 'urgent' : ''}">⏱ ${order.deadlineHours.toFixed(1)}h to deadline</div>
-      ${reasonHtml}
-      <div class="order-actions">${actions}</div>
-    `;
-    root.appendChild(el);
-  });
+    // One button for each printer that can take it now (best first), with its chance and the risk
+    // to fix; otherwise the easiest reason to fix.
+    const checks = state.printers.map((slot) => canAssign(order, slot));
+    const ready = [];
+    checks.forEach((c, i) => {
+      if (!c.ok) return;
+      const slot = state.printers[i];
+      const est = Sim.estimateJob(Cat, state, slot, order, c.materialId);
+      const risk = Sim.jobRisk(Cat, state, slot, order, est);
+      ready.push({ i, est, risk, value: est.keep * risk.chance });
+    });
+    ready.sort((a, b) => b.value - a.value);
+    const one = state.printers.length === 1;
+    const buttons = ready.slice(0, 4).map((r) => {
+      const model = printerById(state.printers[r.i].printerId).model;
+      const late = r.est.lateFactor < 1 ? ` · late: pays ${Math.round(r.est.lateFactor * 100)}%` : '';
+      return `<button data-act="assign" data-order="${order.id}" data-slot="${r.i}" title="${esc(r.risk.text)}"><span class="assign-main">${one ? 'Print it' : `Print on ${esc(model)}`}</span><span class="assign-risk${r.risk.chance < 0.7 ? ' risky' : ''}">${esc(r.risk.text)}${late}</span></button>`;
+    });
+    buttons.push(`<button class="reject" data-act="reject" data-order="${order.id}" title="Decline">Decline</button>`);
+    put(v, 'actions', parts.actions, buttons.join(''), true);
+
+    let reason = '';
+    if (!ready.length) reason = waitReason(order, checks, one);
+    showEl(v, 'reasonOn', parts.reason, !!reason, 'block');
+    if (reason) put(v, 'reason', parts.reason, reason);
+  }
+  for (const [id, o] of orderEls) if (!live.has(id)) { o.el.remove(); orderEls.delete(id); }
+  const list = S.list;
+  if (list.children.length !== wanted.length || wanted.some((el, i) => list.children[i] !== el)) {
+    wanted.forEach((el, i) => { if (list.children[i] !== el) list.insertBefore(el, list.children[i] || null); });
+  }
+  lastOrdersRender = Date.now();
 }
 
+// Materials: shop upgrades for storage on top, then every material, grouped, stock first.
+const matEls = new Map();
+let invShell = null;
 function renderInventory() {
   const root = document.getElementById('inventory');
-  root.innerHTML = '';
+  if (!invShell || !root.contains(invShell.upgrades)) {
+    root.innerHTML = '';
+    matEls.clear();
+    const upgrades = document.createElement('div');
+    upgrades.className = 'shop-upgrades';
+    upgrades.innerHTML = `<div class="inv-cat-header"><span>SHOP UPGRADES</span></div>` + Sim.UPGRADES.filter(u => u.scope === 'shop').map(u => `
+      <div class="mat-card upgrade-row" data-upgrade="${u.id}" title="${esc(u.desc)}">
+        <div class="mat-info"><div class="mat-name">${u.name}</div><div class="mat-stock">${u.short}</div></div>
+        <button class="mat-buy" data-act="buyShopUpgrade" data-arg="${u.id}"></button>
+      </div>`).join('');
+    root.appendChild(upgrades);
+    const groups = {};
+    for (const cat of ['filament', 'resin', 'powder', 'fiber']) {
+      const box = document.createElement('div');
+      box.className = 'inv-group';
+      box.innerHTML = `<div class="inv-cat-header"><span>${{ filament: 'FILAMENT', resin: 'RESIN', powder: 'POWDER', fiber: 'FIBER / METAL' }[cat]}</span> <span class="inv-cat-count"></span></div><div class="inv-items"></div>`;
+      root.appendChild(box);
+      groups[cat] = { box, items: box.querySelector('.inv-items'), count: box.querySelector('.inv-cat-count') };
+    }
+    invShell = { upgrades, groups, v: {} };
+    const totalEl = document.getElementById('inventoryTotal');
+    if (totalEl) totalEl.textContent = `${materialsCat.length} materials`;
+  }
+  // Shop upgrade rows
+  for (const row of invShell.upgrades.querySelectorAll('[data-upgrade]')) {
+    const u = Sim.UPGRADES.find(x => x.id === row.dataset.upgrade);
+    const owned = Sim.hasShopUpgrade(state, u.id);
+    const btn = row.querySelector('button');
+    const label = owned ? 'Owned' : `Buy ${fmtPrice(u.cost)}`;
+    const dis = owned || state.money < u.cost;
+    if (btn.textContent !== label) btn.textContent = label;
+    if (btn.disabled !== dis) btn.disabled = dis;
+    if (row.classList.contains('has-stock') !== owned) row.classList.toggle('has-stock', owned);
+  }
 
-  // Group materials by category. Any material with an unexpected category
-  // gets dropped into "powder" as a safe fallback so nothing is invisible.
   const groups = { filament: [], resin: [], powder: [], fiber: [] };
-  materialsCat.forEach(m => {
-    if (groups[m.category]) groups[m.category].push(m);
-    else groups.powder.push(m);
-  });
-  // Show the total at the top of the section header (handled in render())
-  const totalEl = document.getElementById('inventoryTotal');
-  if (totalEl) totalEl.textContent = `${materialsCat.length} materials`;
-  // Sort each group: stock first (so what you have is on top), then by price
-  Object.keys(groups).forEach(k => {
-    groups[k].sort((a, b) => {
-      const sa = state.inventory[a.id] || 0;
-      const sb = state.inventory[b.id] || 0;
+  materialsCat.forEach(m => { (groups[m.category] || groups.powder).push(m); });
+  const hasDryer = Sim.hasShopUpgrade(state, 'dryer');
+  for (const [cat, items] of Object.entries(groups)) {
+    const g = invShell.groups[cat];
+    put(invShell.v, 'count-' + cat, g.count, String(items.length));
+    items.sort((a, b) => {
+      const sa = state.inventory[a.id] || 0, sb = state.inventory[b.id] || 0;
       if ((sa > 0) !== (sb > 0)) return sa > 0 ? -1 : 1;
-      return (a.costPerKg ?? a.costPerLiter ?? 0) - (b.costPerKg ?? b.costPerLiter ?? 0);
+      return (a.costPerKg ?? 0) - (b.costPerKg ?? 0);
     });
-  });
-
-  const catLabel = { filament: 'FILAMENT', resin: 'RESIN', powder: 'POWDER', fiber: 'FIBER / METAL' };
-  const catOrder = ['filament', 'resin', 'powder', 'fiber'];
-
-  catOrder.forEach(cat => {
-    const items = groups[cat];
-    if (!items || items.length === 0) return;
-    const hdr = document.createElement('div');
-    hdr.className = 'inv-cat-header';
-    hdr.innerHTML = `<span>${catLabel[cat]}</span> <span class="inv-cat-count">${items.length}</span>`;
-    root.appendChild(hdr);
-
-    items.forEach(m => {
+    const wanted = [];
+    for (const m of items) {
+      let o = matEls.get(m.id);
+      if (!o) {
+        const el = document.createElement('div');
+        el.className = 'mat-card';
+        el.dataset.mat = m.id;
+        el.innerHTML = `<div class="mat-info"><div class="mat-name"></div><div class="mat-stock"></div></div>
+          <button class="mat-dry" data-act="dry" data-arg="${m.id}" style="display:none">Dry</button>
+          <button class="mat-buy" data-act="buy" data-arg="${m.id}">Buy 1 kg</button>`;
+        o = { el, v: {}, name: el.querySelector('.mat-name'), stock: el.querySelector('.mat-stock'), dry: el.querySelector('.mat-dry'), buy: el.querySelector('.mat-buy') };
+        matEls.set(m.id, o);
+      }
+      wanted.push(o.el);
       const stock = state.inventory[m.id] || 0;
-      const unitCost = m.costPerKg ?? m.costPerLiter ?? 0;
-      const unit = m.costPerLiter ? 'L' : 'kg';
+      const unitCost = m.costPerKg ?? 0;
+      const compatCount = state.printers.filter(slot => printerById(slot.printerId).materials.includes(m.id)).length;
+      const cls = 'mat-card' + (stock > 0 ? ' has-stock' : '') + (compatCount === 0 ? ' incompat' : '');
+      if (o.v.cls !== cls) { o.v.cls = cls; o.el.className = cls; }
+      put(o.v, 'name', o.name, `${esc(m.name)}${compatCount === 0 ? ' <span class="incompat-tag" title="No owned printer supports this material">N/A</span>' : ''}`, true);
+      const wet = Sim.wetOf(state, m.id);
+      const drying = state.dryer && state.dryer.materialId === m.id;
+      let damp = '';
+      if (drying) damp = ` · <span class="damp-tag drying">drying · ${Sim.fmtDuration(Math.ceil(state.dryer.hoursLeft * 4) / 4)} left</span>`;
+      else if (m.dampHours55 && stock > 0 && wet >= 0.3) damp = ` · <span class="damp-tag${wet >= Sim.DAMP_AT ? ' wet' : ''}">damp ${Math.round(wet * 20) * 5}%</span>`;
+      put(o.v, 'stock', o.stock, `${stock > 0 ? `<strong class="stock-yes">${stock.toFixed(0)} g</strong> · ` : ''}<span class="mat-price">$${unitCost}/kg</span>${damp}`, true);
       const canAfford = state.money >= unitCost;
-      // How many of the player's printers can use this material
-      const compatCount = state.printers.filter(slot => {
-        const printer = printerById(slot.printerId);
-        return printer && printer.materials.includes(m.id);
-      }).length;
-      const el = document.createElement('div');
-      el.className = 'mat-card' + (stock > 0 ? ' has-stock' : '') + (compatCount === 0 ? ' incompat' : '');
-      el.innerHTML = `
-        <div class="mat-info">
-          <div class="mat-name">
-            ${m.name}
-            ${compatCount === 0 ? '<span class="incompat-tag" title="No owned printer supports this material">N/A</span>' : ''}
-          </div>
-          <div class="mat-stock">
-            ${stock > 0 ? `<strong class="stock-yes">${stock.toFixed(0)}g</strong> · ` : ''}<span class="mat-price">$${unitCost}/${unit}</span>
-          </div>
-        </div>
-        <button class="mat-buy" onclick="window.buyMaterial('${m.id}', 1)" ${canAfford ? '' : 'disabled'}>Buy 1${unit}</button>
-      `;
-      root.appendChild(el);
-    });
-  });
-}
-
-function renderHeader() {
-  document.getElementById('money').textContent = state.money.toFixed(2);
-  document.getElementById('day').textContent = state.day;
-  document.getElementById('hour').textContent = fmtTime(state.hour);
-  document.getElementById('rep').textContent = state.reputation;
-  document.getElementById('shipped').textContent = state.shipped;
-  document.getElementById('printerCount').textContent = `${state.printers.length} printer${state.printers.length === 1 ? '' : 's'}`;
-  document.getElementById('orderCount').textContent = `${state.orders.length} pending`;
-  document.getElementById('btnSpeed').textContent = `${speed}x`;
-}
-
-function render() {
-  renderHeader();
-  renderPrinters();
-  renderOrders();
-  renderInventory();
-  if (document.getElementById('shopModal').classList.contains('open')) renderShop();
-}
-
-// =====================================================================
-// Animation loop — drives 3D scenes at ~60fps
-// =====================================================================
-function animate() {
-  if (window.THREE && state) {
-    const root = document.getElementById('printers');
-    if (root) {
-      state.printers.forEach((slot, i) => {
-        const card = root.children[i];
-        if (!card) return;
-        const canvas = card.querySelector('.printer-canvas');
-        if (!canvas) return;
-        const info = ensureScene(canvas, slot);
-        if (info) {
-          updateModel(info, slot);
-          animateScene(info, slot);
-        }
-      });
+      if (o.buy.disabled === canAfford) o.buy.disabled = !canAfford;
+      const dryable = !!m.dryHours && stock > 0 && (wet >= 0.2 || drying);
+      showEl(o.v, 'dryOn', o.dry, dryable, '');
+      if (dryable) {
+        const label = drying ? 'Drying' : !hasDryer ? 'Dry' : state.dryer ? 'Dryer busy' : 'Dry';
+        put(o.v, 'dryLabel', o.dry, label);
+        const dis = drying || !hasDryer || !!state.dryer;
+        if (o.dry.disabled !== dis) o.dry.disabled = dis;
+        const title = !hasDryer ? 'Buy a filament dryer (shop upgrades, above)' : `${m.dryHours} h at ${m.dryC} °C`;
+        if (o.dry.title !== title) o.dry.title = title;
+      }
+    }
+    if (g.items.children.length !== wanted.length || wanted.some((el, i) => g.items.children[i] !== el)) {
+      wanted.forEach((el, i) => { if (g.items.children[i] !== el) g.items.insertBefore(el, g.items.children[i] || null); });
     }
   }
+}
+
+// The shop log: newest first, the last 50 things that happened.
+const logSeen = new WeakSet();
+function renderLog() {
+  const root = document.getElementById('log');
+  if (!root) return;
+  const fresh = [];
+  for (const entry of state.log) { if (logSeen.has(entry)) break; fresh.push(entry); }
+  if (!fresh.length && root.children.length === state.log.length) return;
+  if (fresh.length === state.log.length) root.innerHTML = '';
+  for (let k = fresh.length - 1; k >= 0; k--) {
+    const e = fresh[k];
+    logSeen.add(e);
+    const line = document.createElement('div');
+    line.className = 'log-line ' + (e.kind || 'info');
+    line.innerHTML = `<span class="log-time">Day ${e.day} ${fmtTime(e.hour)}</span> ${esc(e.text)}`;
+    root.insertBefore(line, root.firstChild);
+  }
+  while (root.children.length > state.log.length) root.removeChild(root.lastChild);
+  const count = document.getElementById('logCount');
+  if (count) put(headerV, 'logCount', count, state.log.length ? `last ${state.log.length}` : '');
+}
+
+// Parts off the printer, still washing, curing, cooling or in the furnace.
+const stationV = {};
+function renderStations() {
+  const root = document.getElementById('stations');
+  if (!root) return;
+  const html = state.stations.map((s) => {
+    const ph = s.phases[s.idx];
+    const left = s.phases.slice(s.idx).reduce((a, p) => a + p.h, 0) - s.t;
+    const word = ph ? (Sim.FINISH_NAMES[ph.id] || ph.id) : 'finishing';
+    return `<div class="station-line"><span class="station-what">${esc(s.customer ? `${s.customer}'s ` : '')}${esc(s.productName)}</span>` +
+      `<span class="station-phase">${word} · ${Sim.fmtDuration(Math.max(0, left))} left</span></div>`;
+  }).join('');
+  put(stationV, 'html', root, html ? `<div class="stations-title">Finishing</div>${html}` : '', true);
+  if (stationV.on !== !!html) { stationV.on = !!html; root.hidden = !html; }
+}
+
+const headerV = {};
+function renderHeader() {
+  const set = (id, value) => { const el = document.getElementById(id); if (el) put(headerV, id, el, value); };
+  set('money', state.money.toFixed(2));
+  set('day', String(state.day));
+  set('hour', fmtTime(state.hour));
+  set('rep', String(state.reputation));
+  set('shipped', String(state.shipped));
+  set('humidity', `${Math.round(state.humidity ? state.humidity.rh : 45)}%`);
+  set('printerCount', `${state.printers.length} printer${state.printers.length === 1 ? '' : 's'}`);
+  set('orderCount', `${state.orders.length} pending`);
+  set('btnSpeed', `${speed}x`);
+  const done = state.printers.filter(s => s.phase === 'done').length;
+  const btn = document.getElementById('btnCollectAll');
+  if (btn) {
+    put(headerV, 'collectAll', btn, done ? `Collect all (${done})` : 'Collect all');
+    if (headerV.collectOn !== done > 0) { headerV.collectOn = done > 0; btn.hidden = !done; }
+  }
+  const finishing = state.stations.length;
+  const fin = document.getElementById('finishing');
+  if (fin) {
+    put(headerV, 'finishing', fin, finishing ? `${finishing} part${finishing === 1 ? '' : 's'} finishing` : '');
+    if (headerV.finOn !== finishing > 0) { headerV.finOn = finishing > 0; fin.hidden = !finishing; }
+  }
+}
+
+// Draw what changed. The orders board also refreshes once a second for its countdowns.
+function render() {
+  renderHeader();
+  if (dirty.stations || dirty.printers) { dirty.stations = false; renderStations(); }
+  if (dirty.printers) { dirty.printers = false; renderPrinters(); }
+  if (dirty.orders || Date.now() - lastOrdersRender > 1000) { dirty.orders = false; renderOrders(); }
+  if (dirty.inventory) { dirty.inventory = false; renderInventory(); }
+  if (dirty.log) { dirty.log = false; renderLog(); }
+  if (document.getElementById('shopModal').classList.contains('open') && dirty.shop) { dirty.shop = false; renderShop(); }
+  if (manageSlotIdx >= 0 && dirty.manage) { dirty.manage = false; renderManage(); }
+}
+
+function resetKeyedLists() {
+  orderEls.clear(); ordersShell = null;
+  matEls.clear(); invShell = null;
+  const log = document.getElementById('log');
+  if (log) log.innerHTML = '';
+  for (const k of Object.keys(headerV)) delete headerV[k];
+  for (const k of Object.keys(stationV)) delete stationV[k];
+}
+
+// =====================================================================
+// Animation loop: the stage draws the cards that need it each frame
+// =====================================================================
+function animate() {
+  if (stage && state) stage.frame(performance.now());
   requestAnimationFrame(animate);
 }
 
@@ -2670,7 +1401,7 @@ function toast(msg, kind) {
   t.textContent = msg;
   t.className = 'toast show' + (kind ? ' ' + kind : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = 'toast'; }, 2200);
+  toastTimer = setTimeout(() => { t.className = 'toast'; }, 2600);
 }
 
 function cycleSpeed() {
@@ -2679,6 +1410,8 @@ function cycleSpeed() {
   speed = cycle[(i + 1) % cycle.length];
   render();
 }
+
+function buyShopUpgrade(id) { buyUpgrade(id); }
 
 window.assignOrder = assignOrder;
 window.rejectOrder = rejectOrder;
@@ -2698,6 +1431,50 @@ window.closeSupplies = closeSupplies;
 window.setSuppliesFilter = setSuppliesFilter;
 window.buyFilament = buyFilament;
 window.buyMaterialDirect = buyMaterialDirect;
+window.collectPart = collectPart;
+window.collectAll = collectAll;
+window.coldPull = coldPull;
+window.reprintJob = reprintJob;
+window.releaseJob = releaseJob;
+window.cleanBed = cleanBed;
+window.dryMaterial = dryMaterial;
+window.buyUpgrade = buyUpgrade;
+window.buyShopUpgrade = buyShopUpgrade;
+
+// Card, order and material buttons are drawn once and found by their data-act, so one listener per
+// list serves them all. Each calls through window[...] like the inline onclick handlers do.
+const CARD_ACTIONS = { collect: 'collectPart', coldpull: 'coldPull', reprint: 'reprintJob', release: 'releaseJob', clean: 'cleanBed' };
+function wireLists() {
+  document.getElementById('printers').addEventListener('click', (e) => {
+    const card = e.target.closest('.printer-card');
+    if (!card) return;
+    const i = Array.prototype.indexOf.call(card.parentNode.children, card);
+    if (e.target.closest('.printer-manage-btn')) { window.openManage(i); return; }
+    const b = e.target.closest('button[data-act]');
+    if (b && CARD_ACTIONS[b.dataset.act]) window[CARD_ACTIONS[b.dataset.act]](i);
+  });
+  document.getElementById('orders').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b || b.disabled) return;
+    const id = Number(b.dataset.order);
+    if (b.dataset.act === 'assign') window.assignOrder(id, Number(b.dataset.slot));
+    else if (b.dataset.act === 'reject') window.rejectOrder(id);
+    else if (b.dataset.act === 'rejectAll') window.rejectAllOrders();
+  });
+  document.getElementById('inventory').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b || b.disabled) return;
+    if (b.dataset.act === 'buy') window.buyMaterial(b.dataset.arg, 1);
+    else if (b.dataset.act === 'dry') window.dryMaterial(b.dataset.arg);
+    else if (b.dataset.act === 'buyShopUpgrade') window.buyShopUpgrade(b.dataset.arg);
+  });
+  document.getElementById('shopList').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-buy]');
+    if (b && !b.disabled) window.buyPrinter(b.dataset.buy);
+  });
+  document.getElementById('manageBody').addEventListener('click', onManageClick);
+  document.getElementById('btnCollectAll').addEventListener('click', () => window.collectAll());
+}
 
 async function waitForThree() {
   if (window.THREE) return;
@@ -2708,15 +1485,48 @@ async function waitForThree() {
   });
 }
 
+// A plain, readable message instead of a blank page when the code or data can't load.
+function showBootError(err) {
+  console.error('[Print3D] boot failed:', err);
+  const box = document.createElement('div');
+  box.id = 'bootError';
+  box.setAttribute('role', 'alert');
+  box.style.cssText = 'position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:16px;background:#111;color:#e5e7eb;font:16px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;text-align:center';
+  box.innerHTML = '<div><p style="margin-bottom:12px">Print3D could not load. Check your connection, then reload the page.</p>' +
+    '<button type="button" style="font:inherit;padding:10px 18px;border-radius:6px;border:1px solid #555;background:#222;color:inherit;cursor:pointer" onclick="location.reload()">Reload</button></div>';
+  document.body.appendChild(box);
+}
+
 async function boot() {
-  await loadCatalogs();
+  try {
+    const v = encodeURIComponent(BUILD);
+    [Sim, Save] = await Promise.all([import('./sim.js?v=' + v), import('./save.js?v=' + v)]);
+    await loadCatalogs();
+  } catch (e) {
+    showBootError(e);
+    return;
+  }
   await waitForThree();
   state = loadState();
+  saveState();   // the migrated save is written straight away (the v4 original stays in its backup)
+  if (bootNotes.length) {
+    Sim.appendLog(state, bootNotes.map(n => ({ text: n.text, kind: n.kind === 'warn' ? 'warn' : 'info', at: Sim.now(state) })));
+    const last = bootNotes[bootNotes.length - 1];
+    setTimeout(() => toast(last.text, last.kind === 'warn' ? 'warn' : 'info'), 400);
+  }
   document.getElementById('btnSpeed').addEventListener('click', cycleSpeed);
   document.getElementById('btnReset').addEventListener('click', resetState);
+  wireLists();
+  markAll();
   render();
   lastTickReal = Date.now();
   setInterval(tick, TICK_MS);
   requestAnimationFrame(animate);
+  startStage().then((s) => {
+    if (!s) return;
+    attachAllCards();
+    dirty.orders = true;
+    if (document.getElementById('shopModal').classList.contains('open')) requestShopThumbnails();
+  });
 }
 boot();
